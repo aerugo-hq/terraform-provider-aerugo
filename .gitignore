@@ -1,0 +1,19 @@
+# Builds of the provider
+/terraform-provider-aerugo
+/terraform-provider-aerugo.exe
+/dist/
+
+# Terraform's working files, from trying the examples: state holds IDs, and can hold more, so it never goes in Git
+.terraform/
+.terraform.lock.hcl
+*.tfstate
+*.tfstate.*
+*.tfvars
+crash.log
+.env
+
+# Editors and OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

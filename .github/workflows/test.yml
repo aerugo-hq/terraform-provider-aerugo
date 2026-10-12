@@ -1,0 +1,26 @@
+# Every push and pull request: the provider builds, passes go vet, and passes its unit tests (which need no Aerugo).
+# Acceptance tests need a running Aerugo, so they run locally for now (README: "Test against your local Aerugo").
+name: Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: go mod download
+      - run: go build -v ./...
+      - run: go vet ./...
+      - run: go test -v -count=1 ./...

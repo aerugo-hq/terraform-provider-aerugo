@@ -1,0 +1,84 @@
+# Terraform provider for Aerugo
+
+Manage an Aerugo org as code: its teams and members, the models each team asks with, the sources that bring knowledge in, and the rules that keep it. The same provider works against a self-hosted Aerugo and the SaaS; only the endpoint and the service account change. Every change goes through Aerugo's public API, so it passes the same permission checks, validation, and audit as a change made in the app, and the app marks what Terraform manages.
+
+The design is ADR 0009 in the platform's repository.
+
+## What's here
+
+| | |
+|---|---|
+| `aerugo_team` | A team. Protected from destroy until `deletion_protection = false`; `wait_for_purge` waits for its removal to finish. |
+| `aerugo_team_member` | A role on a team for a person, a group, or a service account. Imports as `team/principal/role`. |
+| `data.aerugo_team` | A team that exists already, with the tool that manages it. |
+| `data.aerugo_status` | The API's version and whether each part answers. |
+
+Next: models and budgets, service accounts, then sources (connections, routes, pipelines, imports), secret stores, and compliance rules.
+
+## Settings
+
+```hcl
+provider "aerugo" {
+  endpoint          = "https://acme.aerugo.cloud"                                   # or AERUGO_ENDPOINT
+  token_url         = "https://login.acme.com/realms/acme/protocol/openid-connect/token" # or AERUGO_TOKEN_URL
+  client_id         = "terraform"                                                   # or AERUGO_CLIENT_ID
+  # client_secret: set AERUGO_CLIENT_SECRET, so it's never written in a configuration
+  managed_workspace = "prod"                                                        # optional; shown in the app
+}
+```
+
+The service account is an OAuth client in your identity provider, registered in Aerugo by an org admin, with only the roles it needs.
+
+## Try it against your local Aerugo (Windows)
+
+You need Go 1.22 or later, and Terraform 1.5 or later (or OpenTofu).
+
+1. **Build and install the provider** (into `%USERPROFILE%\go\bin`):
+
+   ```powershell
+   go mod tidy
+   go install .
+   ```
+
+2. **Point Terraform at your build** instead of the registry. Create `%APPDATA%\terraform.rc` with:
+
+   ```hcl
+   provider_installation {
+     dev_overrides {
+       "aerugo-hq/aerugo" = "C:/Users/<you>/go/bin"
+     }
+     direct {}
+   }
+   ```
+
+3. **Start Aerugo** (`make up` in the platform's repository), then register the development service account. The script asks for an org admin's password (olivia's, in the development realm) and prints the four `$env:AERUGO_*` lines to paste:
+
+   ```powershell
+   .\scripts\dev-service-account.ps1
+   ```
+
+   The platform's smoke checks remove this registration when they finish, so run the script again after `make smoke`.
+
+4. **Apply the example**, then open the app: the teams are there, marked as managed by Terraform. With `dev_overrides`, skip `terraform init`.
+
+   ```powershell
+   cd examples\complete
+   terraform plan
+   terraform apply
+   ```
+
+   Change a team's name in the app, run `terraform plan` again, and it shows the change it would undo. `terraform destroy` removes it all.
+
+## Tests
+
+- **Unit tests** need nothing running: `go test ./...` (CI runs these on every push).
+- **Acceptance tests** run the real provider against your local Aerugo, with the `AERUGO_*` settings from step 3. They create, import, update, and destroy real teams, and check that a change made in the app shows up as drift:
+
+  ```powershell
+  $env:TF_ACC = "1"
+  go test -v -count=1 -timeout 30m ./internal/provider
+  ```
+
+## Releasing
+
+Pushing a `v*` tag (`git tag v0.1.0; git push origin v0.1.0`) builds every platform, signs the checksums with the release GPG key, and opens a draft GitHub release for review. It needs two repository secrets, `GPG_PRIVATE_KEY` and `PASSPHRASE`, and the key's public half added to the registry. The repository must be public, with a license, before its first registry release.
