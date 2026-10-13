@@ -10,10 +10,13 @@ The design is ADR 0009 in the platform's repository.
 |---|---|
 | `aerugo_team` | A team. Protected from destroy until `deletion_protection = false`; `wait_for_purge` waits for its removal to finish. |
 | `aerugo_team_member` | A role on a team for a person, a group, or a service account. Imports as `team/principal/role`. |
+| `aerugo_model` | A model a team can ask with, and the classifications it may receive. Its `api_key` is write-only, never in state; change `api_key_version` to rotate it. Imports as `team/name`. |
+| `aerugo_model_budget` | A monthly token cap on a team's model, set by org admins. Destroying it removes the cap. Imports as `team/model`. |
+| `aerugo_service_account` | A machine identity (an OAuth client from your identity provider) that may call Aerugo's API, with only the roles it's given. It won't disable or remove the account Terraform itself signs in as. |
 | `data.aerugo_team` | A team that exists already, with the tool that manages it. |
 | `data.aerugo_status` | The API's version and whether each part answers. |
 
-Next: models and budgets, service accounts, then sources (connections, routes, pipelines, imports), secret stores, and compliance rules.
+Next: sources (connections, routes, pipelines, imports), secret stores, and compliance rules.
 
 ## Settings
 
@@ -31,7 +34,7 @@ The service account is an OAuth client in your identity provider, registered in 
 
 ## Try it against your local Aerugo (Windows)
 
-You need Go 1.22 or later, and Terraform 1.5 or later (or OpenTofu).
+You need Go 1.22 or later, and Terraform 1.11 or later: a model's key is a write-only argument, which older versions don't have.
 
 1. **Build and install the provider** (into `%USERPROFILE%\go\bin`):
 
@@ -59,10 +62,11 @@ You need Go 1.22 or later, and Terraform 1.5 or later (or OpenTofu).
 
    The platform's smoke checks remove this registration when they finish, so run the script again after `make smoke`.
 
-4. **Apply the example**, then open the app: the teams are there, marked as managed by Terraform. With `dev_overrides`, skip `terraform init`.
+4. **Apply the example**, then open the app: the teams are there, marked as managed by Terraform. With `dev_overrides`, skip `terraform init`. The model's key comes from an environment variable, so it's never in a file or in state; the development stack's stand-in model accepts any key.
 
    ```powershell
    cd examples\complete
+   $env:TF_VAR_model_key = "any-key-works-in-development"
    terraform plan
    terraform apply
    ```

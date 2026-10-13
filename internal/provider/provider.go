@@ -131,6 +131,9 @@ func (p *aerugoProvider) Resources(_ context.Context) []func() resource.Resource
 	return []func() resource.Resource{
 		NewTeamResource,
 		NewTeamMemberResource,
+		NewModelResource,
+		NewModelBudgetResource,
+		NewServiceAccountResource,
 	}
 }
 

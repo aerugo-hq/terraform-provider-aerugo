@@ -9,7 +9,8 @@ import (
 	"github.com/aerugo-hq/terraform-provider-aerugo/internal/client"
 )
 
-// The API's own patterns, checked at plan time so a bad name fails before anything is sent.
+// The API's own patterns, checked at plan time so a bad name fails before anything is sent. Each resource's own
+// patterns and helpers live in its file (models in model_resource.go, service accounts in service_account_resource.go).
 var (
 	slugPattern      = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,39}$`)                        // teams, models, pipelines
 	principalPattern = regexp.MustCompile(`^(user|group):[A-Za-z0-9][A-Za-z0-9._@-]{0,127}$`) // who a role is given to
