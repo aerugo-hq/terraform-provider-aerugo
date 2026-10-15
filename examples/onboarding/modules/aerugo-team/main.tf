@@ -19,7 +19,7 @@ variable "connections" {
   description = "The team's sources, from its sources.yaml."
   type = list(object({
     name              = string
-    kind              = string           # github, google, jira, confluence, slack, or directory
+    kind              = string           # github, google, jira, confluence, slack, microsoft, or directory
     site              = optional(string) # Jira's or Confluence's site, or a directory's Okta org
     projects          = optional(list(string))
     spaces            = optional(list(string)) # Confluence: its spaces, by key
@@ -29,13 +29,14 @@ variable "connections" {
     installation_id   = optional(number)
     repositories      = optional(list(string))
     channels          = optional(list(string)) # Slack: its channels, by id
+    sites             = optional(list(string)) # Microsoft 365: its granted sites, by Graph's site id
     company_workspace = optional(bool, false)  # Slack: the company's own workspace
     history_days      = optional(number)       # Slack: how far back it reads
     drives            = optional(list(string))
     domain            = optional(string)
     directory         = optional(string) # okta, google (Google Workspace), or entra
     admin_email       = optional(string) # Google Workspace: the read-only admin it acts as
-    tenant_id         = optional(string) # Entra: the tenant's id
+    tenant_id         = optional(string) # Entra, Microsoft 365: the tenant's id
     client_id         = optional(string) # Entra: the app registration's id
     credential_ref    = optional(string)
     every_minutes     = optional(number)
@@ -68,6 +69,7 @@ resource "aerugo_connection" "this" {
   installation_id   = each.value.installation_id
   repositories      = each.value.repositories
   channels          = each.value.channels
+  sites             = each.value.sites
   company_workspace = each.value.company_workspace
   history_days      = each.value.history_days
   drives            = each.value.drives
