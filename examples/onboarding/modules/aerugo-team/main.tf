@@ -19,7 +19,7 @@ variable "connections" {
   description = "The team's sources, from its sources.yaml."
   type = list(object({
     name              = string
-    kind              = string           # github, google, jira, confluence, slack, microsoft, or directory
+    kind              = string           # github, google, jira, confluence, slack, microsoft, notion, or directory
     site              = optional(string) # Jira's or Confluence's site, or a directory's Okta org
     projects          = optional(list(string))
     spaces            = optional(list(string)) # Confluence: its spaces, by key

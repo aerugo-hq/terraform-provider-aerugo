@@ -326,3 +326,45 @@ resource "aerugo_connection" "m365" {
 		},
 	})
 }
+
+// A live Notion connection (S6) against the development stack's fake Notion: its integration token is write-only.
+func TestAccConnectionNotion(t *testing.T) {
+	slug := "tfacc-" + acctest.RandStringFromCharSet(6, acctest.CharSetAlphaNum)
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { testAccPreCheck(t) },
+		ProtoV6ProviderFactories: testAccProviders,
+		Steps: []resource.TestStep{
+			{
+				Config: fmt.Sprintf(`
+resource "aerugo_team" "t" {
+  slug                = %q
+  name                = "Notion"
+  deletion_protection = false
+  wait_for_purge      = true
+}
+
+resource "aerugo_connection" "notion" {
+  team          = aerugo_team.t.slug
+  name          = "notion"
+  kind          = "notion"
+  site          = "http://fake-llm:8080/notion/v1"
+  api_token     = "ntn_smoke_notion_integration_token"
+  every_minutes = 60
+}
+`, slug),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("aerugo_connection.notion", "kind", "notion"),
+					resource.TestCheckResourceAttr("aerugo_connection.notion", "every_minutes", "60"),
+					resource.TestCheckNoResourceAttr("aerugo_connection.notion", "api_token"), // write-only
+				),
+			},
+			{
+				ResourceName:            "aerugo_connection.notion",
+				ImportState:             true,
+				ImportStateId:           slug + "/notion",
+				ImportStateVerify:       true,
+				ImportStateVerifyIgnore: []string{"api_token", "site", "credential_version", "status"},
+			},
+		},
+	})
+}
