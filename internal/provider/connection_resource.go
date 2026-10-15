@@ -58,6 +58,7 @@ type connectionModel struct {
 	Drives            types.List   `tfsdk:"drives"`
 	Domain            types.String `tfsdk:"domain"`
 	Directory         types.String `tfsdk:"directory"`
+	AdminEmail        types.String `tfsdk:"admin_email"`
 	Email             types.String `tfsdk:"email"`
 	APIToken          types.String `tfsdk:"api_token"`
 	ServiceAccountKey types.String `tfsdk:"service_account_key"`
@@ -85,6 +86,7 @@ type connectionAPI struct {
 		Drives        []string `json:"drives"`
 		Repositories  []string `json:"repositories"`
 		Provider      *string  `json:"provider"`
+		AdminEmail    *string  `json:"admin_email"`
 		CredentialRef *string  `json:"credential_ref"`
 	} `json:"settings"`
 }
@@ -177,7 +179,7 @@ func (r *connectionResource) Schema(_ context.Context, _ resource.SchemaRequest,
 			},
 			"site": schema.StringAttribute{
 				Optional:      true,
-				Description:   "Jira or Confluence: its site (https://<site>.atlassian.net). Directory: its Okta org (https://<org>.okta.com).",
+				Description:   "Jira or Confluence: its site (https://<site>.atlassian.net). Directory: its Okta org (https://<org>.okta.com); unset for Google Workspace, which has its own address.",
 				PlanModifiers: replace,
 				Validators:    []validator.String{stringvalidator.LengthBetween(8, 300)},
 			},
@@ -205,9 +207,14 @@ func (r *connectionResource) Schema(_ context.Context, _ resource.SchemaRequest,
 			},
 			"directory": schema.StringAttribute{
 				Optional: true, Computed: true,
-				Description:   "Directory: which one (okta, its default). Unset for any other kind.",
+				Description:   "Directory: which one, okta (its default) or google (Google Workspace, which also brings each group's members to Drive's group shares). Unset for any other kind.",
 				PlanModifiers: []planmodifier.String{stringplanmodifier.RequiresReplace(), stringplanmodifier.UseStateForUnknown()},
-				Validators:    []validator.String{stringvalidator.OneOf("okta")},
+				Validators:    []validator.String{stringvalidator.OneOf("okta", "google")},
+			},
+			"admin_email": schema.StringAttribute{
+				Optional:    true,
+				Description: "A Google Workspace directory: the admin it acts as through domain-wide delegation, a read-only one in one of the company's domains. Changes in place.",
+				Validators:  []validator.String{stringvalidator.LengthBetween(3, 254)},
 			},
 			"email": schema.StringAttribute{
 				Optional:    true,
@@ -221,7 +228,7 @@ func (r *connectionResource) Schema(_ context.Context, _ resource.SchemaRequest,
 			},
 			"service_account_key": schema.StringAttribute{
 				Optional: true, Sensitive: true, WriteOnly: true,
-				Description: "Google Drive: the service account's JSON key, when there's no credential_ref. Write-only, like api_token.",
+				Description: "Google Drive, or a Google Workspace directory: the service account's JSON key, when there's no credential_ref. Write-only, like api_token.",
 				Validators:  []validator.String{stringvalidator.LengthBetween(2, 20000)},
 			},
 			"credential_version": schema.Int64Attribute{
@@ -316,7 +323,10 @@ func (r *connectionResource) refresh(ctx context.Context, m *connectionModel, go
 		m.Labels = connList(ctx, s.Labels, diags)
 		m.PageTrees = connList(ctx, s.PageTrees, diags)
 	case "directory":
-		m.Site = connString(s.APIBase)
+		if s.Provider == nil || *s.Provider != "google" { // Google Workspace's address is its own, like Drive's
+			m.Site = connString(s.APIBase)
+		}
+		m.AdminEmail = connString(s.AdminEmail)
 	}
 	m.Directory = types.StringNull() // computed: known after every read, so a plan never shows it changing
 	if got.Kind == "directory" {
@@ -427,12 +437,34 @@ func (r *connectionResource) Create(ctx context.Context, req resource.CreateRequ
 		}
 	case "directory":
 		route += "/directory"
+		provider := "okta"
+		if connSet(plan.Directory) {
+			provider = plan.Directory.ValueString()
+		}
+		in["provider"] = provider
+		if provider == "google" {
+			if !connSet(plan.AdminEmail) {
+				resp.Diagnostics.AddAttributeError(path.Root("admin_email"), "Missing admin_email",
+					"A Google Workspace directory acts as an admin through domain-wide delegation: name a read-only one.")
+				return
+			}
+			in["admin_email"] = plan.AdminEmail.ValueString()
+			if connSet(plan.Site) {
+				in["api_base"] = plan.Site.ValueString()
+			}
+			switch {
+			case ref != "" && key == "":
+				in["credential_ref"] = ref
+			case ref == "" && key != "":
+				in["service_account_key"] = key
+			default:
+				oneCredential("service_account_key")
+				return
+			}
+			break
+		}
 		if !needSite() {
 			return
-		}
-		in["provider"] = "okta"
-		if connSet(plan.Directory) {
-			in["provider"] = plan.Directory.ValueString()
 		}
 		switch {
 		case ref != "" && token == "":
@@ -514,6 +546,9 @@ func (r *connectionResource) Update(ctx context.Context, req resource.UpdateRequ
 	}
 	if connSet(plan.Email) && !plan.Email.Equal(state.Email) {
 		in["email"] = plan.Email.ValueString()
+	}
+	if connSet(plan.AdminEmail) && !plan.AdminEmail.Equal(state.AdminEmail) {
+		in["admin_email"] = plan.AdminEmail.ValueString()
 	}
 	if !plan.CredentialVersion.Equal(state.CredentialVersion) { // a rotation: send the secret again, only then
 		token := connWriteOnly(ctx, req.Config, "api_token", &resp.Diagnostics)
