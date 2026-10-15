@@ -18,25 +18,28 @@ variable "team" {
 variable "connections" {
   description = "The team's sources, from its sources.yaml."
   type = list(object({
-    name            = string
-    kind            = string           # github, google, jira, confluence, or directory
-    site            = optional(string) # Jira's or Confluence's site, or a directory's Okta org
-    projects        = optional(list(string))
-    spaces          = optional(list(string)) # Confluence: its spaces, by key
-    labels          = optional(list(string)) # Confluence: only pages with one of these labels
-    page_trees      = optional(list(string)) # Confluence: only these pages, by id, and what's under them
-    company_site    = optional(bool, false)
-    installation_id = optional(number)
-    repositories    = optional(list(string))
-    drives          = optional(list(string))
-    domain          = optional(string)
-    directory       = optional(string) # okta, google (Google Workspace), or entra
-    admin_email     = optional(string) # Google Workspace: the read-only admin it acts as
-    tenant_id       = optional(string) # Entra: the tenant's id
-    client_id       = optional(string) # Entra: the app registration's id
-    credential_ref  = optional(string)
-    every_minutes   = optional(number)
-    enabled         = optional(bool, true)
+    name              = string
+    kind              = string           # github, google, jira, confluence, slack, or directory
+    site              = optional(string) # Jira's or Confluence's site, or a directory's Okta org
+    projects          = optional(list(string))
+    spaces            = optional(list(string)) # Confluence: its spaces, by key
+    labels            = optional(list(string)) # Confluence: only pages with one of these labels
+    page_trees        = optional(list(string)) # Confluence: only these pages, by id, and what's under them
+    company_site      = optional(bool, false)
+    installation_id   = optional(number)
+    repositories      = optional(list(string))
+    channels          = optional(list(string)) # Slack: its channels, by id
+    company_workspace = optional(bool, false)  # Slack: the company's own workspace
+    history_days      = optional(number)       # Slack: how far back it reads
+    drives            = optional(list(string))
+    domain            = optional(string)
+    directory         = optional(string) # okta, google (Google Workspace), or entra
+    admin_email       = optional(string) # Google Workspace: the read-only admin it acts as
+    tenant_id         = optional(string) # Entra: the tenant's id
+    client_id         = optional(string) # Entra: the app registration's id
+    credential_ref    = optional(string)
+    every_minutes     = optional(number)
+    enabled           = optional(bool, true)
   }))
   default = []
 
@@ -53,26 +56,29 @@ variable "connections" {
 resource "aerugo_connection" "this" {
   for_each = { for c in var.connections : c.name => c }
 
-  team            = var.team
-  name            = each.value.name
-  kind            = each.value.kind
-  site            = each.value.site
-  projects        = each.value.projects
-  spaces          = each.value.spaces
-  labels          = each.value.labels
-  page_trees      = each.value.page_trees
-  company_site    = each.value.company_site
-  installation_id = each.value.installation_id
-  repositories    = each.value.repositories
-  drives          = each.value.drives
-  domain          = each.value.domain
-  directory       = each.value.directory
-  admin_email     = each.value.admin_email
-  tenant_id       = each.value.tenant_id
-  client_id       = each.value.client_id
-  credential_ref  = each.value.credential_ref
-  every_minutes   = each.value.every_minutes
-  enabled         = each.value.enabled
+  team              = var.team
+  name              = each.value.name
+  kind              = each.value.kind
+  site              = each.value.site
+  projects          = each.value.projects
+  spaces            = each.value.spaces
+  labels            = each.value.labels
+  page_trees        = each.value.page_trees
+  company_site      = each.value.company_site
+  installation_id   = each.value.installation_id
+  repositories      = each.value.repositories
+  channels          = each.value.channels
+  company_workspace = each.value.company_workspace
+  history_days      = each.value.history_days
+  drives            = each.value.drives
+  domain            = each.value.domain
+  directory         = each.value.directory
+  admin_email       = each.value.admin_email
+  tenant_id         = each.value.tenant_id
+  client_id         = each.value.client_id
+  credential_ref    = each.value.credential_ref
+  every_minutes     = each.value.every_minutes
+  enabled           = each.value.enabled
 }
 
 output "connections" {

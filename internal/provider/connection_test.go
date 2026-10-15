@@ -209,3 +209,60 @@ resource "aerugo_connection" "entra" {
 		},
 	})
 }
+
+// A Slack connection (S4) against the development stack's fake Slack: its bot token is write-only, and its channels
+// and history window change in place.
+func TestAccConnectionSlack(t *testing.T) {
+	slug := "tfacc-" + acctest.RandStringFromCharSet(6, acctest.CharSetAlphaNum)
+	config := func(channels string, days int) string {
+		return fmt.Sprintf(`
+resource "aerugo_team" "t" {
+  slug                = %q
+  name                = "Slack"
+  deletion_protection = false
+  wait_for_purge      = true
+}
+
+resource "aerugo_connection" "slack" {
+  team          = aerugo_team.t.slug
+  name          = "slack"
+  kind          = "slack"
+  site          = "http://fake-llm:8080/slack/api"
+  api_token     = "xoxb-smoke-slack-token"
+  channels      = %s
+  history_days  = %d
+  every_minutes = 60
+}
+`, slug, channels, days)
+	}
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { testAccPreCheck(t) },
+		ProtoV6ProviderFactories: testAccProviders,
+		Steps: []resource.TestStep{
+			{
+				Config: config(`["C0123ABCD"]`, 30),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("aerugo_connection.slack", "kind", "slack"),
+					resource.TestCheckResourceAttr("aerugo_connection.slack", "channels.#", "1"),
+					resource.TestCheckResourceAttr("aerugo_connection.slack", "history_days", "30"),
+					resource.TestCheckResourceAttr("aerugo_connection.slack", "company_workspace", "false"),
+					resource.TestCheckNoResourceAttr("aerugo_connection.slack", "api_token"), // write-only
+				),
+			},
+			{
+				ResourceName:            "aerugo_connection.slack",
+				ImportState:             true,
+				ImportStateId:           slug + "/slack",
+				ImportStateVerify:       true,
+				ImportStateVerifyIgnore: []string{"api_token", "site", "credential_version", "status"},
+			},
+			{ // another channel, a longer window: in place
+				Config: config(`["C0123ABCD", "C0456EFGH"]`, 90),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("aerugo_connection.slack", "channels.#", "2"),
+					resource.TestCheckResourceAttr("aerugo_connection.slack", "history_days", "90"),
+				),
+			},
+		},
+	})
+}
