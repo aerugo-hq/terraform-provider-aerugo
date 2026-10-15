@@ -30,8 +30,10 @@ variable "connections" {
     repositories    = optional(list(string))
     drives          = optional(list(string))
     domain          = optional(string)
-    directory       = optional(string) # okta, or google (Google Workspace)
+    directory       = optional(string) # okta, google (Google Workspace), or entra
     admin_email     = optional(string) # Google Workspace: the read-only admin it acts as
+    tenant_id       = optional(string) # Entra: the tenant's id
+    client_id       = optional(string) # Entra: the app registration's id
     credential_ref  = optional(string)
     every_minutes   = optional(number)
     enabled         = optional(bool, true)
@@ -66,6 +68,8 @@ resource "aerugo_connection" "this" {
   domain          = each.value.domain
   directory       = each.value.directory
   admin_email     = each.value.admin_email
+  tenant_id       = each.value.tenant_id
+  client_id       = each.value.client_id
   credential_ref  = each.value.credential_ref
   every_minutes   = each.value.every_minutes
   enabled         = each.value.enabled

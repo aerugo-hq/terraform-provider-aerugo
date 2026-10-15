@@ -1,8 +1,15 @@
 package provider
 
 import (
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/pem"
 	"fmt"
+	"math/big"
 	"testing"
+	"time"
 
 	"github.com/hashicorp/terraform-plugin-testing/helper/acctest"
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
@@ -125,6 +132,79 @@ resource "aerugo_connection" "workspace" {
 			{ // another admin to act as: in place
 				Config: config("directory-reader@acme.test"),
 				Check:  resource.TestCheckResourceAttr("aerugo_connection.workspace", "admin_email", "directory-reader@acme.test"),
+			},
+		},
+	})
+}
+
+// testCertificate is a throwaway RSA key and self-signed certificate, as PEM: the shape an Entra app's certificate
+// credential takes. The API checks the key is the certificate's; nothing signs in with it here.
+func testCertificate(t *testing.T) string {
+	t.Helper()
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	template := &x509.Certificate{SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: "tfacc-entra"},
+		NotBefore: time.Now().Add(-time.Minute), NotAfter: time.Now().Add(time.Hour)}
+	der, err := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pkcs8, err := x509.MarshalPKCS8PrivateKey(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: pkcs8})) +
+		string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}))
+}
+
+// An Entra directory (S3): its tenant and app are read back, its certificate is write-only, and Graph's own address
+// isn't read back as drift.
+func TestAccConnectionEntraDirectory(t *testing.T) {
+	slug := "tfacc-" + acctest.RandStringFromCharSet(6, acctest.CharSetAlphaNum)
+	tenant, app := "8b3e9a64-7c1f-4f3e-9d2a-1a2b3c4d5e6f", "2f6d1c8e-5a4b-4c3d-8e9f-0a1b2c3d4e5f"
+	config := fmt.Sprintf(`
+resource "aerugo_team" "t" {
+  slug                = %q
+  name                = "Entra"
+  deletion_protection = false
+  wait_for_purge      = true
+}
+
+resource "aerugo_connection" "entra" {
+  team          = aerugo_team.t.slug
+  name          = "entra"
+  kind          = "directory"
+  directory     = "entra"
+  site          = "http://fake-llm:8080/microsoft"
+  tenant_id     = %q
+  client_id     = %q
+  certificate   = <<-EOT
+%s
+  EOT
+  every_minutes = 60
+}
+`, slug, tenant, app, testCertificate(t))
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { testAccPreCheck(t) },
+		ProtoV6ProviderFactories: testAccProviders,
+		Steps: []resource.TestStep{
+			{
+				Config: config,
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("aerugo_connection.entra", "directory", "entra"),
+					resource.TestCheckResourceAttr("aerugo_connection.entra", "tenant_id", tenant),
+					resource.TestCheckResourceAttr("aerugo_connection.entra", "client_id", app),
+					resource.TestCheckNoResourceAttr("aerugo_connection.entra", "certificate"), // write-only
+				),
+			},
+			{
+				ResourceName:            "aerugo_connection.entra",
+				ImportState:             true,
+				ImportStateId:           slug + "/entra",
+				ImportStateVerify:       true,
+				ImportStateVerifyIgnore: []string{"certificate", "site", "credential_version", "status"},
 			},
 		},
 	})

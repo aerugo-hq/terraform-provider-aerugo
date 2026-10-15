@@ -12,8 +12,9 @@ import (
 // The API's own patterns, checked at plan time so a bad name fails before anything is sent. Each resource's own
 // patterns and helpers live in its file (models in model_resource.go, service accounts in service_account_resource.go).
 var (
-	slugPattern      = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,39}$`)                        // teams, models, pipelines
-	principalPattern = regexp.MustCompile(`^(user|group):[A-Za-z0-9][A-Za-z0-9._@-]{0,127}$`) // who a role is given to
+	slugPattern      = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,39}$`)                                                     // teams, models, pipelines
+	guidPattern      = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`) // Entra's tenants and apps
+	principalPattern = regexp.MustCompile(`^(user|group):[A-Za-z0-9][A-Za-z0-9._@-]{0,127}$`)                              // who a role is given to
 )
 
 const slugRule = "lowercase letters, digits, and dashes, starting with a letter or a digit, 40 at most"
