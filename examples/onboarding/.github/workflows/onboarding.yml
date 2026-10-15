@@ -3,7 +3,8 @@
 # summary. One run at a time, so two merges never apply over each other.
 #
 # Repository settings it reads: variables AERUGO_ENDPOINT, AERUGO_TOKEN_URL, AERUGO_CLIENT_ID, GCP_WORKLOAD_PROVIDER,
-# GCP_STATE_SERVICE_ACCOUNT; secret AERUGO_CLIENT_SECRET. Pin the actions to commit SHAs in production.
+# GCP_STATE_SERVICE_ACCOUNT; secret AERUGO_CLIENT_SECRET, given only to the steps that sign in to Aerugo (plan and
+# apply), never to an action's step. Actions are pinned to commit SHAs, so a moved tag can't change what runs here.
 name: onboarding
 
 on:
@@ -26,18 +27,17 @@ jobs:
       AERUGO_ENDPOINT: ${{ vars.AERUGO_ENDPOINT }}
       AERUGO_TOKEN_URL: ${{ vars.AERUGO_TOKEN_URL }}
       AERUGO_CLIENT_ID: ${{ vars.AERUGO_CLIENT_ID }}
-      AERUGO_CLIENT_SECRET: ${{ secrets.AERUGO_CLIENT_SECRET }}
       TF_CLI_CONFIG_FILE: ${{ github.workspace }}/.terraformrc
       TF_IN_AUTOMATION: "1"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
-      - uses: google-github-actions/auth@v2
+      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
         with:
           workload_identity_provider: ${{ vars.GCP_WORKLOAD_PROVIDER }}
           service_account: ${{ vars.GCP_STATE_SERVICE_ACCOUNT }}
 
-      - uses: hashicorp/setup-terraform@v3
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
         with:
           terraform_version: 1.11.4
           terraform_wrapper: false
@@ -48,6 +48,8 @@ jobs:
       - run: terraform init -input=false
       - run: terraform validate
       - run: terraform plan -input=false -out=plan.tfplan
+        env:
+          AERUGO_CLIENT_SECRET: ${{ secrets.AERUGO_CLIENT_SECRET }}
 
       - name: Show the plan to reviewers
         run: |
@@ -61,3 +63,5 @@ jobs:
       - name: Apply on merge
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         run: terraform apply -input=false plan.tfplan
+        env:
+          AERUGO_CLIENT_SECRET: ${{ secrets.AERUGO_CLIENT_SECRET }}
