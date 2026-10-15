@@ -1,0 +1,63 @@
+# Plan on every pull request; apply on merge to main, signed in to Aerugo as the onboarding service account (an org
+# admin registers it under Developer, and gives it only the roles it needs). Reviewers see the plan in the run's
+# summary. One run at a time, so two merges never apply over each other.
+#
+# Repository settings it reads: variables AERUGO_ENDPOINT, AERUGO_TOKEN_URL, AERUGO_CLIENT_ID, GCP_WORKLOAD_PROVIDER,
+# GCP_STATE_SERVICE_ACCOUNT; secret AERUGO_CLIENT_SECRET. Pin the actions to commit SHAs in production.
+name: onboarding
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  id-token: write # workload identity, for the state bucket: no key stored for it
+
+concurrency:
+  group: onboarding
+  cancel-in-progress: false
+
+jobs:
+  terraform:
+    runs-on: ubuntu-latest
+    env:
+      AERUGO_ENDPOINT: ${{ vars.AERUGO_ENDPOINT }}
+      AERUGO_TOKEN_URL: ${{ vars.AERUGO_TOKEN_URL }}
+      AERUGO_CLIENT_ID: ${{ vars.AERUGO_CLIENT_ID }}
+      AERUGO_CLIENT_SECRET: ${{ secrets.AERUGO_CLIENT_SECRET }}
+      TF_CLI_CONFIG_FILE: ${{ github.workspace }}/.terraformrc
+      TF_IN_AUTOMATION: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_PROVIDER }}
+          service_account: ${{ vars.GCP_STATE_SERVICE_ACCOUNT }}
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.11.4
+          terraform_wrapper: false
+
+      - name: Install the Aerugo provider from the private mirror
+        run: cp terraformrc.example .terraformrc
+
+      - run: terraform init -input=false
+      - run: terraform validate
+      - run: terraform plan -input=false -out=plan.tfplan
+
+      - name: Show the plan to reviewers
+        run: |
+          {
+            echo '### What this change does to Aerugo'
+            echo '```'
+            terraform show -no-color plan.tfplan
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Apply on merge
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: terraform apply -input=false plan.tfplan

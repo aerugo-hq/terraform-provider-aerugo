@@ -1,0 +1,21 @@
+# Payments' sources. A change here is a pull request, reviewed by Payments' leads (CODEOWNERS); CI shows the plan on it
+# and applies it on merge. Each credential_ref names a secret Payments keeps; the token itself is never written here.
+connections:
+  - name: payments-jira
+    kind: jira
+    site: https://acme.atlassian.net
+    projects: [EDP, PAY]
+    company_site: true # acme.atlassian.net is the company's own site
+    credential_ref: openbao://secret/kl/acme/payments/connections/atlassian-bot
+    every_minutes: 15
+
+  - name: payments-drive
+    kind: google
+    domain: acme.com # a file shared with everyone at acme.com reaches the whole org
+    credential_ref: openbao://secret/kl/acme/payments/connections/drive-reader
+    every_minutes: 60
+
+  - name: payments-knowledge # curated pages, as code
+    kind: github
+    installation_id: 12345678 # the Aerugo GitHub App's installation on the acme org
+    repositories: [acme/payments-knowledge]

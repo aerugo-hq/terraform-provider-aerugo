@@ -134,6 +134,7 @@ func (p *aerugoProvider) Resources(_ context.Context) []func() resource.Resource
 		NewModelResource,
 		NewModelBudgetResource,
 		NewServiceAccountResource,
+		NewConnectionResource,
 	}
 }
 
