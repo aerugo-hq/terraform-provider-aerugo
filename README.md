@@ -13,10 +13,13 @@ The design is ADR 0009 in the platform's repository.
 | `aerugo_model` | A model a team can ask with, and the classifications it may receive. Its `api_key` is write-only, never in state; change `api_key_version` to rotate it. Imports as `team/name`. |
 | `aerugo_model_budget` | A monthly token cap on a team's model, set by org admins. Destroying it removes the cap. Imports as `team/model`. |
 | `aerugo_service_account` | A machine identity (an OAuth client from your identity provider) that may call Aerugo's API, with only the roles it's given. It won't disable or remove the account Terraform itself signs in as. |
+| `aerugo_connection` | A source a team connects (GitHub, Google Drive, Jira, Confluence, or a directory), read by a service account on a schedule, each item keeping its source's own readers. Its credential is a `credential_ref` to a secret the team keeps, or a write-only `api_token` / `service_account_key` (never in state; change `credential_version` to rotate). Cadence, scope lists (projects, spaces, labels, page trees, repositories, drives), and pausing change in place. Imports as `team/name`. |
 | `data.aerugo_team` | A team that exists already, with the tool that manages it. |
 | `data.aerugo_status` | The API's version and whether each part answers. |
 
-Next: sources (connections, routes, pipelines, imports), secret stores, and compliance rules.
+Next: routes, pipelines, imports, secret stores, and compliance rules. To onboard every team's sources from one
+reviewed repository (a YAML file per team, plan on each pull request, apply on merge), start from
+[examples/onboarding](examples/onboarding).
 
 ## Settings
 
@@ -54,6 +57,12 @@ You need Go 1.22 or later, and Terraform 1.11 or later: a model's key is a write
    }
    ```
 
+   In Git Bash, this writes it for you, with your own Go folder:
+
+   ```bash
+   printf 'provider_installation {\n  dev_overrides {\n    "aerugo-hq/aerugo" = "%s/bin"\n  }\n  direct {}\n}\n' "$(go env GOPATH | tr '\\' '/')" > "$APPDATA/terraform.rc"
+   ```
+
 3. **Start Aerugo** (`make up` in the platform's repository), then register the development service account. The script asks for an org admin's password (olivia's, in the development realm) and prints the four `$env:AERUGO_*` lines to paste:
 
    ```powershell
@@ -67,6 +76,19 @@ You need Go 1.22 or later, and Terraform 1.11 or later: a model's key is a write
    ```powershell
    cd examples\complete
    $env:TF_VAR_model_key = "any-key-works-in-development"
+   terraform plan
+   terraform apply
+   ```
+
+   In Git Bash, settings are exported, and paths use forward slashes:
+
+   ```bash
+   export AERUGO_ENDPOINT="http://localhost:8000"
+   export AERUGO_TOKEN_URL="http://localhost:8081/realms/acme/protocol/openid-connect/token"
+   export AERUGO_CLIENT_ID="kl-terraform"
+   export AERUGO_CLIENT_SECRET="kl-terraform-dev-secret"   # the development realm's, never a real one
+   export TF_VAR_model_key="any-key-works-in-development"
+   cd examples/complete
    terraform plan
    terraform apply
    ```

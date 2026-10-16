@@ -1,0 +1,6 @@
+# Each team owns its own sources; the platform team owns the module, the root configuration, and the workflow. GitHub
+# requires an owner's review before a change to their paths can merge (with branch protection's "require review from
+# Code Owners" on).
+*                    @acme/platform
+/teams/payments/     @acme/payments-leads
+/teams/finance/      @acme/finance-leads

@@ -6,7 +6,7 @@
 # It asks for an org admin's password (olivia in the development realm), signs in as them, and registers the client.
 # The platform's smoke checks remove this registration when they finish, so run this again after make smoke.
 param(
-  [string]$Api = "http://localhost:8080",
+  [string]$Api = "http://localhost:8000",   # the API's port in the platform's docker-compose.yml (KL_API_PORT)
   [string]$TokenUrl = "http://localhost:8081/realms/acme/protocol/openid-connect/token",
   [string]$Admin = "olivia"
 )

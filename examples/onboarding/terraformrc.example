@@ -1,0 +1,12 @@
+# Install the Aerugo provider from your private mirror, never the public registry: a static site (a GCS bucket behind
+# HTTPS, say) laid out by `terraform providers mirror`, which the provider's release build fills. Every other provider
+# still comes from the public registry. CI copies this file to .terraformrc; on a laptop, set TF_CLI_CONFIG_FILE to it.
+provider_installation {
+  network_mirror {
+    url     = "https://terraform.acme.internal/providers/"
+    include = ["registry.terraform.io/aerugo-hq/aerugo"]
+  }
+  direct {
+    exclude = ["registry.terraform.io/aerugo-hq/aerugo"]
+  }
+}
