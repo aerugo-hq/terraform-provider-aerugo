@@ -32,7 +32,7 @@ var (
 )
 
 // The kinds of source a connection can be (ADR 0011), each created through its own API route.
-var connectionKinds = []string{"github", "google", "jira", "confluence", "directory"}
+var connectionKinds = []string{"github", "google", "jira", "confluence", "slack", "directory"}
 
 type connectionResource struct {
 	client *client.Client
@@ -62,6 +62,9 @@ type connectionModel struct {
 	TenantID          types.String `tfsdk:"tenant_id"`
 	ClientID          types.String `tfsdk:"client_id"`
 	Certificate       types.String `tfsdk:"certificate"`
+	Channels          types.List   `tfsdk:"channels"`
+	CompanyWorkspace  types.Bool   `tfsdk:"company_workspace"`
+	HistoryDays       types.Int64  `tfsdk:"history_days"`
 	Email             types.String `tfsdk:"email"`
 	APIToken          types.String `tfsdk:"api_token"`
 	ServiceAccountKey types.String `tfsdk:"service_account_key"`
@@ -92,6 +95,9 @@ type connectionAPI struct {
 		AdminEmail    *string  `json:"admin_email"`
 		TenantID      *string  `json:"tenant_id"`
 		ClientID      *string  `json:"client_id"`
+		Channels      []string `json:"channels"`
+		CompanyWS     *bool    `json:"company_workspace"`
+		HistoryDays   *int64   `json:"history_days"`
 		CredentialRef *string  `json:"credential_ref"`
 	} `json:"settings"`
 }
@@ -162,7 +168,7 @@ func (r *connectionResource) Schema(_ context.Context, _ resource.SchemaRequest,
 			},
 			"kind": schema.StringAttribute{
 				Required:      true,
-				Description:   "What it connects: github, google (Drive), jira, confluence, or directory (who's at the company, and who has left).",
+				Description:   "What it connects: github, google (Drive), jira, confluence, slack, or directory (who's at the company, and who has left).",
 				PlanModifiers: replace,
 				Validators:    []validator.String{stringvalidator.OneOf(connectionKinds...)},
 			},
@@ -204,7 +210,18 @@ func (r *connectionResource) Schema(_ context.Context, _ resource.SchemaRequest,
 				Validators:    []validator.Int64{int64validator.AtLeast(1)},
 			},
 			"repositories": scope("GitHub: the repositories it brings in; unset, every one the installation grants."),
-			"drives":       scope("Google Drive: the shared drives it brings in; folders shared with its account always come."),
+			"channels":     scope("Slack: the channels it brings in, by id; unset, every channel its bot is in."),
+			"company_workspace": schema.BoolAttribute{
+				Optional: true, Computed: true, Default: booldefault.StaticBool(false),
+				Description:   "Slack: this workspace is the company's own, so a public channel reaches the whole org (a channel shared with another organization never does).",
+				PlanModifiers: []planmodifier.Bool{boolplanmodifier.RequiresReplace()},
+			},
+			"history_days": schema.Int64Attribute{
+				Optional:    true,
+				Description: "Slack: how many days back it reads (1 to 3650); unset, a year. Older messages leave the index. Changes in place.",
+				Validators:  []validator.Int64{int64validator.Between(1, 3650)},
+			},
+			"drives": scope("Google Drive: the shared drives it brings in; folders shared with its account always come."),
 			"domain": schema.StringAttribute{
 				Optional:      true,
 				Description:   "Google Drive: the company's domain; a file shared with everyone there reaches the whole org.",
@@ -245,7 +262,7 @@ func (r *connectionResource) Schema(_ context.Context, _ resource.SchemaRequest,
 			},
 			"api_token": schema.StringAttribute{
 				Optional: true, Sensitive: true, WriteOnly: true,
-				Description: "Jira, Confluence, or Okta: the account's API token, when there's no credential_ref. Write-only: pass it from an ephemeral, sensitive variable.",
+				Description: "Jira, Confluence, or Okta: the account's API token; Slack: its bot token (xoxb-...); when there's no credential_ref. Write-only: pass it from an ephemeral, sensitive variable.",
 				Validators:  []validator.String{stringvalidator.LengthBetween(8, 4000)},
 			},
 			"service_account_key": schema.StringAttribute{
@@ -329,6 +346,7 @@ func (r *connectionResource) refresh(ctx context.Context, m *connectionModel, go
 	m.EveryMinutes = connInt64(s.EveryMinutes)
 	m.CredentialRef = connString(s.CredentialRef)
 	m.CompanySite = types.BoolValue((got.Kind == "jira" || got.Kind == "confluence") && s.CompanySite != nil && *s.CompanySite)
+	m.CompanyWorkspace = types.BoolValue(got.Kind == "slack" && s.CompanyWS != nil && *s.CompanyWS)
 	switch got.Kind {
 	case "github":
 		m.InstallationID = connInt64(got.InstallationID)
@@ -344,6 +362,9 @@ func (r *connectionResource) refresh(ctx context.Context, m *connectionModel, go
 		m.Spaces = connList(ctx, s.Spaces, diags)
 		m.Labels = connList(ctx, s.Labels, diags)
 		m.PageTrees = connList(ctx, s.PageTrees, diags)
+	case "slack":
+		m.Channels = connList(ctx, s.Channels, diags)
+		m.HistoryDays = connInt64(s.HistoryDays)
 	case "directory":
 		if s.Provider == nil || *s.Provider == "okta" { // Google Workspace's and Entra's addresses are their own, like Drive's
 			m.Site = connString(s.APIBase)
@@ -460,6 +481,27 @@ func (r *connectionResource) Create(ctx context.Context, req resource.CreateRequ
 			if values := connStrings(ctx, list, &resp.Diagnostics); values != nil {
 				in[field] = values
 			}
+		}
+	case "slack":
+		route += "/slack"
+		if connSet(plan.Site) {
+			in["api_base"] = plan.Site.ValueString()
+		}
+		in["company_workspace"] = plan.CompanyWorkspace.ValueBool()
+		switch {
+		case ref != "" && token == "":
+			in["credential_ref"] = ref
+		case ref == "" && token != "":
+			in["bot_token"] = token
+		default:
+			oneCredential("api_token (the bot token)")
+			return
+		}
+		if channels := connStrings(ctx, plan.Channels, &resp.Diagnostics); channels != nil {
+			in["channels"] = channels
+		}
+		if !plan.HistoryDays.IsNull() && !plan.HistoryDays.IsUnknown() {
+			in["history_days"] = plan.HistoryDays.ValueInt64()
 		}
 	case "directory":
 		route += "/directory"
@@ -585,6 +627,7 @@ func (r *connectionResource) Update(ctx context.Context, req resource.UpdateRequ
 	for field, lists := range map[string][2]types.List{
 		"projects": {plan.Projects, state.Projects}, "repositories": {plan.Repositories, state.Repositories}, "drives": {plan.Drives, state.Drives},
 		"spaces": {plan.Spaces, state.Spaces}, "labels": {plan.Labels, state.Labels}, "page_trees": {plan.PageTrees, state.PageTrees},
+		"channels": {plan.Channels, state.Channels},
 	} {
 		if !lists[0].IsNull() && !lists[0].Equal(lists[1]) {
 			in[field] = connStrings(ctx, lists[0], &resp.Diagnostics)
@@ -592,6 +635,9 @@ func (r *connectionResource) Update(ctx context.Context, req resource.UpdateRequ
 	}
 	if connSet(plan.Email) && !plan.Email.Equal(state.Email) {
 		in["email"] = plan.Email.ValueString()
+	}
+	if !plan.HistoryDays.IsNull() && !plan.HistoryDays.IsUnknown() && !plan.HistoryDays.Equal(state.HistoryDays) {
+		in["history_days"] = plan.HistoryDays.ValueInt64()
 	}
 	if connSet(plan.AdminEmail) && !plan.AdminEmail.Equal(state.AdminEmail) {
 		in["admin_email"] = plan.AdminEmail.ValueString()
@@ -605,6 +651,8 @@ func (r *connectionResource) Update(ctx context.Context, req resource.UpdateRequ
 			in["certificate"] = certificate
 		case key != "":
 			in["service_account_key"] = key
+		case token != "" && plan.Kind.ValueString() == "slack":
+			in["bot_token"] = token
 		case token != "":
 			in["api_token"] = token
 		default:
