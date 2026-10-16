@@ -70,3 +70,62 @@ resource "aerugo_connection" "jira" {
 		},
 	})
 }
+
+// A Google Workspace directory (S2) against the development stack's fake Admin SDK: its key is write-only, the admin it
+// acts as changes in place, and Google's own address isn't read back as drift. The key is a stand-in that only has a
+// service account's shape; the worker can't sign with it, and the test doesn't need it to.
+func TestAccConnectionGoogleDirectory(t *testing.T) {
+	slug := "tfacc-" + acctest.RandStringFromCharSet(6, acctest.CharSetAlphaNum)
+	config := func(admin string) string {
+		return fmt.Sprintf(`
+resource "aerugo_team" "t" {
+  slug                = %q
+  name                = "Directory"
+  deletion_protection = false
+  wait_for_purge      = true
+}
+
+resource "aerugo_connection" "workspace" {
+  team                = aerugo_team.t.slug
+  name                = "workspace"
+  kind                = "directory"
+  directory           = "google"
+  site                = "http://fake-llm:8080/google"
+  admin_email         = %q
+  service_account_key = jsonencode({
+    type         = "service_account"
+    client_email = "tfacc-directory@acme-dev.iam.gserviceaccount.com"
+    private_key  = "-----BEGIN PRIVATE KEY-----\nnot-a-real-key\n-----END PRIVATE KEY-----\n"
+  })
+  every_minutes = 60
+}
+`, slug, admin)
+	}
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { testAccPreCheck(t) },
+		ProtoV6ProviderFactories: testAccProviders,
+		Steps: []resource.TestStep{
+			{
+				Config: config("directory-admin@acme.test"),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("aerugo_connection.workspace", "kind", "directory"),
+					resource.TestCheckResourceAttr("aerugo_connection.workspace", "directory", "google"),
+					resource.TestCheckResourceAttr("aerugo_connection.workspace", "admin_email", "directory-admin@acme.test"),
+					resource.TestCheckNoResourceAttr("aerugo_connection.workspace", "service_account_key"), // write-only
+					resource.TestCheckNoResourceAttr("aerugo_connection.workspace", "credential_ref"),
+				),
+			},
+			{
+				ResourceName:            "aerugo_connection.workspace",
+				ImportState:             true,
+				ImportStateId:           slug + "/workspace",
+				ImportStateVerify:       true,
+				ImportStateVerifyIgnore: []string{"service_account_key", "site", "credential_version", "status"},
+			},
+			{ // another admin to act as: in place
+				Config: config("directory-reader@acme.test"),
+				Check:  resource.TestCheckResourceAttr("aerugo_connection.workspace", "admin_email", "directory-reader@acme.test"),
+			},
+		},
+	})
+}
