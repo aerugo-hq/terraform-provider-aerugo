@@ -218,7 +218,8 @@ func (r *teamResource) Delete(ctx context.Context, req resource.DeleteRequest, r
 			return
 		case "cancelled":
 			resp.Diagnostics.AddError("The team's removal was cancelled",
-				fmt.Sprintf("Someone cancelled the removal of %q in the app, so the team still exists.", slug))
+				fmt.Sprintf("The removal of %q was cancelled, in the app or by a legal hold placed after it was scheduled, "+
+					"so the team still exists.", slug))
 			return
 		}
 		if time.Now().After(deadline) {
