@@ -32,7 +32,7 @@ var (
 )
 
 // The kinds of source a connection can be (ADR 0011), each created through its own API route.
-var connectionKinds = []string{"github", "google", "jira", "confluence", "slack", "microsoft", "directory"}
+var connectionKinds = []string{"github", "google", "jira", "confluence", "slack", "microsoft", "notion", "directory"}
 
 type connectionResource struct {
 	client *client.Client
@@ -170,7 +170,7 @@ func (r *connectionResource) Schema(_ context.Context, _ resource.SchemaRequest,
 			},
 			"kind": schema.StringAttribute{
 				Required:      true,
-				Description:   "What it connects: github, google (Drive), jira, confluence, slack, microsoft (Microsoft 365), or directory (who's at the company, and who has left).",
+				Description:   "What it connects: github, google (Drive), jira, confluence, slack, microsoft (Microsoft 365), notion (readable by the team's members only: Notion doesn't say who can read a page), or directory (who's at the company, and who has left).",
 				PlanModifiers: replace,
 				Validators:    []validator.String{stringvalidator.OneOf(connectionKinds...)},
 			},
@@ -265,7 +265,7 @@ func (r *connectionResource) Schema(_ context.Context, _ resource.SchemaRequest,
 			},
 			"api_token": schema.StringAttribute{
 				Optional: true, Sensitive: true, WriteOnly: true,
-				Description: "Jira, Confluence, or Okta: the account's API token; Slack: its bot token (xoxb-...); when there's no credential_ref. Write-only: pass it from an ephemeral, sensitive variable.",
+				Description: "Jira, Confluence, or Okta: the account's API token; Slack: its bot token (xoxb-...); Notion: its internal integration's token; when there's no credential_ref. Write-only: pass it from an ephemeral, sensitive variable.",
 				Validators:  []validator.String{stringvalidator.LengthBetween(8, 4000)},
 			},
 			"service_account_key": schema.StringAttribute{
@@ -489,6 +489,20 @@ func (r *connectionResource) Create(ctx context.Context, req resource.CreateRequ
 				in[field] = values
 			}
 		}
+	case "notion":
+		route += "/notion"
+		if connSet(plan.Site) {
+			in["api_base"] = plan.Site.ValueString()
+		}
+		switch {
+		case ref != "" && token == "":
+			in["credential_ref"] = ref
+		case ref == "" && token != "":
+			in["token"] = token
+		default:
+			oneCredential("api_token (the integration's token)")
+			return
+		}
 	case "microsoft":
 		route += "/microsoft"
 		sites := connStrings(ctx, plan.Sites, &resp.Diagnostics)
@@ -681,6 +695,8 @@ func (r *connectionResource) Update(ctx context.Context, req resource.UpdateRequ
 			in["service_account_key"] = key
 		case token != "" && plan.Kind.ValueString() == "slack":
 			in["bot_token"] = token
+		case token != "" && plan.Kind.ValueString() == "notion":
+			in["token"] = token
 		case token != "":
 			in["api_token"] = token
 		default:
