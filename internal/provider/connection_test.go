@@ -266,3 +266,63 @@ resource "aerugo_connection" "slack" {
 		},
 	})
 }
+
+// A Microsoft 365 connection (S5): its tenant, app, and granted sites are read back, its certificate is write-only,
+// and its sites change in place.
+func TestAccConnectionMicrosoft365(t *testing.T) {
+	slug := "tfacc-" + acctest.RandStringFromCharSet(6, acctest.CharSetAlphaNum)
+	tenant, app := "8b3e9a64-7c1f-4f3e-9d2a-1a2b3c4d5e6f", "2f6d1c8e-5a4b-4c3d-8e9f-0a1b2c3d4e5f"
+	one := "acme.sharepoint.com,11111111-2222-3333-4444-555555555555,66666666-7777-8888-9999-000000000000"
+	two := "acme.sharepoint.com,11111111-2222-3333-4444-555555555556,66666666-7777-8888-9999-000000000001"
+	certificate := testCertificate(t)
+	config := func(sites string) string {
+		return fmt.Sprintf(`
+resource "aerugo_team" "t" {
+  slug                = %q
+  name                = "Microsoft"
+  deletion_protection = false
+  wait_for_purge      = true
+}
+
+resource "aerugo_connection" "m365" {
+  team          = aerugo_team.t.slug
+  name          = "m365"
+  kind          = "microsoft"
+  site          = "http://fake-llm:8080/microsoft"
+  tenant_id     = %q
+  client_id     = %q
+  sites         = %s
+  certificate   = <<-EOT
+%s
+  EOT
+  every_minutes = 60
+}
+`, slug, tenant, app, sites, certificate)
+	}
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { testAccPreCheck(t) },
+		ProtoV6ProviderFactories: testAccProviders,
+		Steps: []resource.TestStep{
+			{
+				Config: config(fmt.Sprintf("[%q]", one)),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("aerugo_connection.m365", "kind", "microsoft"),
+					resource.TestCheckResourceAttr("aerugo_connection.m365", "tenant_id", tenant),
+					resource.TestCheckResourceAttr("aerugo_connection.m365", "sites.#", "1"),
+					resource.TestCheckNoResourceAttr("aerugo_connection.m365", "certificate"), // write-only
+				),
+			},
+			{
+				ResourceName:            "aerugo_connection.m365",
+				ImportState:             true,
+				ImportStateId:           slug + "/m365",
+				ImportStateVerify:       true,
+				ImportStateVerifyIgnore: []string{"certificate", "site", "credential_version", "status"},
+			},
+			{ // another site granted: in place
+				Config: config(fmt.Sprintf("[%q, %q]", one, two)),
+				Check:  resource.TestCheckResourceAttr("aerugo_connection.m365", "sites.#", "2"),
+			},
+		},
+	})
+}

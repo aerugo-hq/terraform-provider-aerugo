@@ -32,7 +32,7 @@ var (
 )
 
 // The kinds of source a connection can be (ADR 0011), each created through its own API route.
-var connectionKinds = []string{"github", "google", "jira", "confluence", "slack", "directory"}
+var connectionKinds = []string{"github", "google", "jira", "confluence", "slack", "microsoft", "directory"}
 
 type connectionResource struct {
 	client *client.Client
@@ -65,6 +65,7 @@ type connectionModel struct {
 	Channels          types.List   `tfsdk:"channels"`
 	CompanyWorkspace  types.Bool   `tfsdk:"company_workspace"`
 	HistoryDays       types.Int64  `tfsdk:"history_days"`
+	Sites             types.List   `tfsdk:"sites"`
 	Email             types.String `tfsdk:"email"`
 	APIToken          types.String `tfsdk:"api_token"`
 	ServiceAccountKey types.String `tfsdk:"service_account_key"`
@@ -98,6 +99,7 @@ type connectionAPI struct {
 		Channels      []string `json:"channels"`
 		CompanyWS     *bool    `json:"company_workspace"`
 		HistoryDays   *int64   `json:"history_days"`
+		Sites         []string `json:"sites"`
 		CredentialRef *string  `json:"credential_ref"`
 	} `json:"settings"`
 }
@@ -168,7 +170,7 @@ func (r *connectionResource) Schema(_ context.Context, _ resource.SchemaRequest,
 			},
 			"kind": schema.StringAttribute{
 				Required:      true,
-				Description:   "What it connects: github, google (Drive), jira, confluence, slack, or directory (who's at the company, and who has left).",
+				Description:   "What it connects: github, google (Drive), jira, confluence, slack, microsoft (Microsoft 365), or directory (who's at the company, and who has left).",
 				PlanModifiers: replace,
 				Validators:    []validator.String{stringvalidator.OneOf(connectionKinds...)},
 			},
@@ -211,6 +213,7 @@ func (r *connectionResource) Schema(_ context.Context, _ resource.SchemaRequest,
 			},
 			"repositories": scope("GitHub: the repositories it brings in; unset, every one the installation grants."),
 			"channels":     scope("Slack: the channels it brings in, by id; unset, every channel its bot is in."),
+			"sites":        scope("Microsoft 365: the SharePoint sites an admin granted its app (Sites.Selected), by Graph's site id; required for microsoft."),
 			"company_workspace": schema.BoolAttribute{
 				Optional: true, Computed: true, Default: booldefault.StaticBool(false),
 				Description:   "Slack: this workspace is the company's own, so a public channel reaches the whole org (a channel shared with another organization never does).",
@@ -235,19 +238,19 @@ func (r *connectionResource) Schema(_ context.Context, _ resource.SchemaRequest,
 			},
 			"tenant_id": schema.StringAttribute{
 				Optional:      true,
-				Description:   "An Entra directory: the tenant's id.",
+				Description:   "An Entra directory, or Microsoft 365: the tenant's id.",
 				PlanModifiers: replace,
 				Validators:    []validator.String{stringvalidator.RegexMatches(guidPattern, "must be a tenant id (a GUID)")},
 			},
 			"client_id": schema.StringAttribute{
 				Optional:      true,
-				Description:   "An Entra directory: its app registration's application (client) id.",
+				Description:   "An Entra directory, or Microsoft 365: its app registration's application (client) id.",
 				PlanModifiers: replace,
 				Validators:    []validator.String{stringvalidator.RegexMatches(guidPattern, "must be an application id (a GUID)")},
 			},
 			"certificate": schema.StringAttribute{
 				Optional: true, Sensitive: true, WriteOnly: true,
-				Description: "An Entra directory: its app's private key and certificate (PEM), when there's no credential_ref; it signs in with this, never a client secret. Write-only, like api_token.",
+				Description: "An Entra directory, or Microsoft 365: its app's private key and certificate (PEM), when there's no credential_ref; it signs in with this, never a client secret. Write-only, like api_token.",
 				Validators:  []validator.String{stringvalidator.LengthBetween(64, 20000)},
 			},
 			"admin_email": schema.StringAttribute{
@@ -365,6 +368,10 @@ func (r *connectionResource) refresh(ctx context.Context, m *connectionModel, go
 	case "slack":
 		m.Channels = connList(ctx, s.Channels, diags)
 		m.HistoryDays = connInt64(s.HistoryDays)
+	case "microsoft":
+		m.Sites = connList(ctx, s.Sites, diags)
+		m.TenantID = connString(s.TenantID)
+		m.ClientID = connString(s.ClientID)
 	case "directory":
 		if s.Provider == nil || *s.Provider == "okta" { // Google Workspace's and Entra's addresses are their own, like Drive's
 			m.Site = connString(s.APIBase)
@@ -481,6 +488,27 @@ func (r *connectionResource) Create(ctx context.Context, req resource.CreateRequ
 			if values := connStrings(ctx, list, &resp.Diagnostics); values != nil {
 				in[field] = values
 			}
+		}
+	case "microsoft":
+		route += "/microsoft"
+		sites := connStrings(ctx, plan.Sites, &resp.Diagnostics)
+		if !connSet(plan.TenantID) || !connSet(plan.ClientID) || len(sites) == 0 {
+			resp.Diagnostics.AddError("Missing tenant_id, client_id, or sites",
+				"A Microsoft 365 connection names its tenant and app registration by id, and the sites an admin granted it.")
+			return
+		}
+		in["tenant_id"], in["client_id"], in["sites"] = plan.TenantID.ValueString(), plan.ClientID.ValueString(), sites
+		if connSet(plan.Site) {
+			in["api_base"] = plan.Site.ValueString()
+		}
+		switch {
+		case ref != "" && certificate == "":
+			in["credential_ref"] = ref
+		case ref == "" && certificate != "":
+			in["certificate"] = certificate
+		default:
+			oneCredential("certificate")
+			return
 		}
 	case "slack":
 		route += "/slack"
@@ -627,7 +655,7 @@ func (r *connectionResource) Update(ctx context.Context, req resource.UpdateRequ
 	for field, lists := range map[string][2]types.List{
 		"projects": {plan.Projects, state.Projects}, "repositories": {plan.Repositories, state.Repositories}, "drives": {plan.Drives, state.Drives},
 		"spaces": {plan.Spaces, state.Spaces}, "labels": {plan.Labels, state.Labels}, "page_trees": {plan.PageTrees, state.PageTrees},
-		"channels": {plan.Channels, state.Channels},
+		"channels": {plan.Channels, state.Channels}, "sites": {plan.Sites, state.Sites},
 	} {
 		if !lists[0].IsNull() && !lists[0].Equal(lists[1]) {
 			in[field] = connStrings(ctx, lists[0], &resp.Diagnostics)
