@@ -59,6 +59,9 @@ type connectionModel struct {
 	Domain            types.String `tfsdk:"domain"`
 	Directory         types.String `tfsdk:"directory"`
 	AdminEmail        types.String `tfsdk:"admin_email"`
+	TenantID          types.String `tfsdk:"tenant_id"`
+	ClientID          types.String `tfsdk:"client_id"`
+	Certificate       types.String `tfsdk:"certificate"`
 	Email             types.String `tfsdk:"email"`
 	APIToken          types.String `tfsdk:"api_token"`
 	ServiceAccountKey types.String `tfsdk:"service_account_key"`
@@ -87,6 +90,8 @@ type connectionAPI struct {
 		Repositories  []string `json:"repositories"`
 		Provider      *string  `json:"provider"`
 		AdminEmail    *string  `json:"admin_email"`
+		TenantID      *string  `json:"tenant_id"`
+		ClientID      *string  `json:"client_id"`
 		CredentialRef *string  `json:"credential_ref"`
 	} `json:"settings"`
 }
@@ -179,7 +184,7 @@ func (r *connectionResource) Schema(_ context.Context, _ resource.SchemaRequest,
 			},
 			"site": schema.StringAttribute{
 				Optional:      true,
-				Description:   "Jira or Confluence: its site (https://<site>.atlassian.net). Directory: its Okta org (https://<org>.okta.com); unset for Google Workspace, which has its own address.",
+				Description:   "Jira or Confluence: its site (https://<site>.atlassian.net). Directory: its Okta org (https://<org>.okta.com); unset for Google Workspace and Entra, which have their own addresses.",
 				PlanModifiers: replace,
 				Validators:    []validator.String{stringvalidator.LengthBetween(8, 300)},
 			},
@@ -207,9 +212,26 @@ func (r *connectionResource) Schema(_ context.Context, _ resource.SchemaRequest,
 			},
 			"directory": schema.StringAttribute{
 				Optional: true, Computed: true,
-				Description:   "Directory: which one, okta (its default) or google (Google Workspace, which also brings each group's members to Drive's group shares). Unset for any other kind.",
+				Description:   "Directory: which one, okta (its default), google (Google Workspace), or entra (Microsoft Entra); Google's and Entra's groups also reach the files shared with them. Unset for any other kind.",
 				PlanModifiers: []planmodifier.String{stringplanmodifier.RequiresReplace(), stringplanmodifier.UseStateForUnknown()},
-				Validators:    []validator.String{stringvalidator.OneOf("okta", "google")},
+				Validators:    []validator.String{stringvalidator.OneOf("okta", "google", "entra")},
+			},
+			"tenant_id": schema.StringAttribute{
+				Optional:      true,
+				Description:   "An Entra directory: the tenant's id.",
+				PlanModifiers: replace,
+				Validators:    []validator.String{stringvalidator.RegexMatches(guidPattern, "must be a tenant id (a GUID)")},
+			},
+			"client_id": schema.StringAttribute{
+				Optional:      true,
+				Description:   "An Entra directory: its app registration's application (client) id.",
+				PlanModifiers: replace,
+				Validators:    []validator.String{stringvalidator.RegexMatches(guidPattern, "must be an application id (a GUID)")},
+			},
+			"certificate": schema.StringAttribute{
+				Optional: true, Sensitive: true, WriteOnly: true,
+				Description: "An Entra directory: its app's private key and certificate (PEM), when there's no credential_ref; it signs in with this, never a client secret. Write-only, like api_token.",
+				Validators:  []validator.String{stringvalidator.LengthBetween(64, 20000)},
 			},
 			"admin_email": schema.StringAttribute{
 				Optional:    true,
@@ -233,7 +255,7 @@ func (r *connectionResource) Schema(_ context.Context, _ resource.SchemaRequest,
 			},
 			"credential_version": schema.Int64Attribute{
 				Optional:    true,
-				Description: "Change this to send api_token or service_account_key again: Aerugo replaces the connection's secret.",
+				Description: "Change this to send api_token, service_account_key, or certificate again: Aerugo replaces the connection's secret.",
 			},
 			"status": schema.StringAttribute{
 				Computed:      true,
@@ -323,10 +345,12 @@ func (r *connectionResource) refresh(ctx context.Context, m *connectionModel, go
 		m.Labels = connList(ctx, s.Labels, diags)
 		m.PageTrees = connList(ctx, s.PageTrees, diags)
 	case "directory":
-		if s.Provider == nil || *s.Provider != "google" { // Google Workspace's address is its own, like Drive's
+		if s.Provider == nil || *s.Provider == "okta" { // Google Workspace's and Entra's addresses are their own, like Drive's
 			m.Site = connString(s.APIBase)
 		}
 		m.AdminEmail = connString(s.AdminEmail)
+		m.TenantID = connString(s.TenantID)
+		m.ClientID = connString(s.ClientID)
 	}
 	m.Directory = types.StringNull() // computed: known after every read, so a plan never shows it changing
 	if got.Kind == "directory" {
@@ -334,6 +358,7 @@ func (r *connectionResource) refresh(ctx context.Context, m *connectionModel, go
 	}
 	m.APIToken = types.StringNull()
 	m.ServiceAccountKey = types.StringNull()
+	m.Certificate = types.StringNull()
 }
 
 func (r *connectionResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
@@ -341,6 +366,7 @@ func (r *connectionResource) Create(ctx context.Context, req resource.CreateRequ
 	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
 	token := connWriteOnly(ctx, req.Config, "api_token", &resp.Diagnostics)
 	key := connWriteOnly(ctx, req.Config, "service_account_key", &resp.Diagnostics)
+	certificate := connWriteOnly(ctx, req.Config, "certificate", &resp.Diagnostics)
 	if resp.Diagnostics.HasError() {
 		return
 	}
@@ -463,6 +489,26 @@ func (r *connectionResource) Create(ctx context.Context, req resource.CreateRequ
 			}
 			break
 		}
+		if provider == "entra" {
+			if !connSet(plan.TenantID) || !connSet(plan.ClientID) {
+				resp.Diagnostics.AddError("Missing tenant_id or client_id", "An Entra directory names its tenant and its app registration by their ids.")
+				return
+			}
+			in["tenant_id"], in["client_id"] = plan.TenantID.ValueString(), plan.ClientID.ValueString()
+			if connSet(plan.Site) {
+				in["api_base"] = plan.Site.ValueString()
+			}
+			switch {
+			case ref != "" && certificate == "":
+				in["credential_ref"] = ref
+			case ref == "" && certificate != "":
+				in["certificate"] = certificate
+			default:
+				oneCredential("certificate")
+				return
+			}
+			break
+		}
 		if !needSite() {
 			return
 		}
@@ -553,14 +599,17 @@ func (r *connectionResource) Update(ctx context.Context, req resource.UpdateRequ
 	if !plan.CredentialVersion.Equal(state.CredentialVersion) { // a rotation: send the secret again, only then
 		token := connWriteOnly(ctx, req.Config, "api_token", &resp.Diagnostics)
 		key := connWriteOnly(ctx, req.Config, "service_account_key", &resp.Diagnostics)
+		certificate := connWriteOnly(ctx, req.Config, "certificate", &resp.Diagnostics)
 		switch {
+		case certificate != "":
+			in["certificate"] = certificate
 		case key != "":
 			in["service_account_key"] = key
 		case token != "":
 			in["api_token"] = token
 		default:
 			resp.Diagnostics.AddAttributeError(path.Root("credential_version"), "Nothing to send",
-				"credential_version changed, which replaces the connection's secret, but neither api_token nor service_account_key was given.")
+				"credential_version changed, which replaces the connection's secret, but no api_token, service_account_key, or certificate was given.")
 			return
 		}
 	}
