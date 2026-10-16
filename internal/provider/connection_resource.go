@@ -32,13 +32,38 @@ var (
 )
 
 // The kinds of source a connection can be (ADR 0011), each created through its own API route.
-var connectionKinds = []string{"github", "google", "jira", "confluence", "slack", "microsoft", "notion", "directory"}
+var connectionKinds = []string{"github", "google", "jira", "confluence", "slack", "microsoft", "notion", "catalog", "directory"}
+
+// The data catalogs a catalog connection reads (S7); Dataplex and Glue are read as the runner's own identity, no secret.
+var catalogKinds = []string{"dataplex", "unity", "glue", "purview", "datahub"}
+
+// dataplexGoogle is the address the API records for Dataplex when none is given: Google's own APIs.
+const dataplexGoogle = "https://googleapis.com"
+
+// keepWhenUnset plans a computed attribute as its state while the configuration leaves it unset, a null state too:
+// UseStateForUnknown skips a null one, so any other change (pausing a connection) planned a Jira connection's
+// directory unknown, and RequiresReplace then replaced the connection.
+type keepWhenUnset struct{}
+
+func (keepWhenUnset) Description(context.Context) string {
+	return "Keeps the state's value while the configuration leaves it unset."
+}
+
+func (m keepWhenUnset) MarkdownDescription(ctx context.Context) string { return m.Description(ctx) }
+
+func (keepWhenUnset) PlanModifyString(_ context.Context, req planmodifier.StringRequest, resp *planmodifier.StringResponse) {
+	if req.State.Raw.IsNull() || req.Plan.Raw.IsNull() || !req.ConfigValue.IsNull() {
+		return // being created, being destroyed, or set in the configuration
+	}
+	resp.PlanValue = req.StateValue
+}
 
 type connectionResource struct {
 	client *client.Client
 }
 
-// The schema calls a directory's provider "directory": provider is one of Terraform's own words in a resource.
+// The schema calls a directory's provider "directory", and a catalog's "catalog": provider is one of Terraform's own
+// words in a resource.
 type connectionModel struct {
 	ID                types.String `tfsdk:"id"`
 	Team              types.String `tfsdk:"team"`
@@ -66,6 +91,14 @@ type connectionModel struct {
 	CompanyWorkspace  types.Bool   `tfsdk:"company_workspace"`
 	HistoryDays       types.Int64  `tfsdk:"history_days"`
 	Sites             types.List   `tfsdk:"sites"`
+	Catalog           types.String `tfsdk:"catalog"`
+	Location          types.String `tfsdk:"location"`
+	Catalogs          types.List   `tfsdk:"catalogs"`
+	Region            types.String `tfsdk:"region"`
+	RoleARN           types.String `tfsdk:"role_arn"`
+	Databases         types.List   `tfsdk:"databases"`
+	Collections       types.List   `tfsdk:"collections"`
+	Platforms         types.List   `tfsdk:"platforms"`
 	Email             types.String `tfsdk:"email"`
 	APIToken          types.String `tfsdk:"api_token"`
 	ServiceAccountKey types.String `tfsdk:"service_account_key"`
@@ -100,6 +133,13 @@ type connectionAPI struct {
 		CompanyWS     *bool    `json:"company_workspace"`
 		HistoryDays   *int64   `json:"history_days"`
 		Sites         []string `json:"sites"`
+		Location      *string  `json:"location"`
+		Catalogs      []string `json:"catalogs"`
+		Region        *string  `json:"region"`
+		RoleARN       *string  `json:"role_arn"`
+		Databases     []string `json:"databases"`
+		Collections   []string `json:"collections"`
+		Platforms     []string `json:"platforms"`
 		CredentialRef *string  `json:"credential_ref"`
 	} `json:"settings"`
 }
@@ -170,7 +210,7 @@ func (r *connectionResource) Schema(_ context.Context, _ resource.SchemaRequest,
 			},
 			"kind": schema.StringAttribute{
 				Required:      true,
-				Description:   "What it connects: github, google (Drive), jira, confluence, slack, microsoft (Microsoft 365), notion (readable by the team's members only: Notion doesn't say who can read a page), or directory (who's at the company, and who has left).",
+				Description:   "What it connects: github, google (Drive), jira, confluence, slack, microsoft (Microsoft 365), notion (readable by the team's members only: Notion doesn't say who can read a page), catalog (a data catalog's metadata), or directory (who's at the company, and who has left).",
 				PlanModifiers: replace,
 				Validators:    []validator.String{stringvalidator.OneOf(connectionKinds...)},
 			},
@@ -192,11 +232,35 @@ func (r *connectionResource) Schema(_ context.Context, _ resource.SchemaRequest,
 			},
 			"site": schema.StringAttribute{
 				Optional:      true,
-				Description:   "Jira or Confluence: its site (https://<site>.atlassian.net). Directory: its Okta org (https://<org>.okta.com); unset for Google Workspace and Entra, which have their own addresses.",
+				Description:   "Jira or Confluence: its site (https://<site>.atlassian.net). Directory: its Okta org (https://<org>.okta.com); unset for Google Workspace and Entra, which have their own addresses. Catalog: Unity Catalog's workspace, Purview's account, or DataHub's address; unset for Dataplex and Glue.",
 				PlanModifiers: replace,
 				Validators:    []validator.String{stringvalidator.LengthBetween(8, 300)},
 			},
-			"projects":   scope("Jira: the projects it brings in, by key; unset, every project its account can browse."),
+			"projects":    scope("Jira: the projects it brings in, by key; unset, every project its account can browse. Dataplex: the Google Cloud projects it reads, by id (required)."),
+			"catalogs":    scope("Unity Catalog: the catalogs it reads; unset, every one its service principal can see."),
+			"databases":   scope("Glue: the databases it reads; unset, every one its role can see."),
+			"collections": scope("Purview: the collections it reads, by id (required)."),
+			"platforms":   scope("DataHub: the platforms whose datasets it reads, as DataHub names them, like snowflake (required)."),
+			"catalog": schema.StringAttribute{
+				Optional: true, Computed: true,
+				Description:   "Catalog: which one, dataplex, unity (Unity Catalog), glue (with SageMaker Catalog's tables), purview, or datahub. Dataplex and Glue are read as the runner's own identity, with no secret, so only an org admin's credentials connect them. Unset for any other kind.",
+				PlanModifiers: []planmodifier.String{keepWhenUnset{}, stringplanmodifier.RequiresReplace()},
+				Validators:    []validator.String{stringvalidator.OneOf(catalogKinds...)},
+			},
+			"location": schema.StringAttribute{
+				Optional: true, Computed: true,
+				Description:   "Dataplex: where its lineage is kept, like us or europe-west1; unset, global.",
+				PlanModifiers: []planmodifier.String{keepWhenUnset{}, stringplanmodifier.RequiresReplace()},
+				Validators:    []validator.String{stringvalidator.LengthBetween(2, 40)},
+			},
+			"region": schema.StringAttribute{
+				Optional: true, Description: "Glue: the AWS region, like us-east-1.", PlanModifiers: replace,
+				Validators: []validator.String{stringvalidator.LengthBetween(9, 30)},
+			},
+			"role_arn": schema.StringAttribute{
+				Optional: true, Description: "Glue: the IAM role the runner assumes with its own identity token.", PlanModifiers: replace,
+				Validators: []validator.String{stringvalidator.LengthBetween(20, 600)},
+			},
 			"spaces":     scope("Confluence: the spaces it brings in, by key; unset, every space its account can view."),
 			"labels":     scope("Confluence: only pages with one of these labels; unset, every page."),
 			"page_trees": scope("Confluence: only these pages, by id, and everything under them; unset, every page."),
@@ -227,30 +291,30 @@ func (r *connectionResource) Schema(_ context.Context, _ resource.SchemaRequest,
 			"drives": scope("Google Drive: the shared drives it brings in; folders shared with its account always come."),
 			"domain": schema.StringAttribute{
 				Optional:      true,
-				Description:   "Google Drive: the company's domain; a file shared with everyone there reaches the whole org.",
+				Description:   "Google Drive, or Dataplex: the company's domain; a file or table shared with everyone there reaches the whole org.",
 				PlanModifiers: replace,
 			},
 			"directory": schema.StringAttribute{
 				Optional: true, Computed: true,
 				Description:   "Directory: which one, okta (its default), google (Google Workspace), or entra (Microsoft Entra); Google's and Entra's groups also reach the files shared with them. Unset for any other kind.",
-				PlanModifiers: []planmodifier.String{stringplanmodifier.RequiresReplace(), stringplanmodifier.UseStateForUnknown()},
+				PlanModifiers: []planmodifier.String{keepWhenUnset{}, stringplanmodifier.RequiresReplace()},
 				Validators:    []validator.String{stringvalidator.OneOf("okta", "google", "entra")},
 			},
 			"tenant_id": schema.StringAttribute{
 				Optional:      true,
-				Description:   "An Entra directory, or Microsoft 365: the tenant's id.",
+				Description:   "An Entra directory, Microsoft 365, or Purview: the tenant's id.",
 				PlanModifiers: replace,
 				Validators:    []validator.String{stringvalidator.RegexMatches(guidPattern, "must be a tenant id (a GUID)")},
 			},
 			"client_id": schema.StringAttribute{
 				Optional:      true,
-				Description:   "An Entra directory, or Microsoft 365: its app registration's application (client) id.",
+				Description:   "An Entra directory, Microsoft 365, or Purview: its app registration's application (client) id. Unity Catalog: its service principal's application id.",
 				PlanModifiers: replace,
 				Validators:    []validator.String{stringvalidator.RegexMatches(guidPattern, "must be an application id (a GUID)")},
 			},
 			"certificate": schema.StringAttribute{
 				Optional: true, Sensitive: true, WriteOnly: true,
-				Description: "An Entra directory, or Microsoft 365: its app's private key and certificate (PEM), when there's no credential_ref; it signs in with this, never a client secret. Write-only, like api_token.",
+				Description: "An Entra directory, Microsoft 365, or Purview: its app's private key and certificate (PEM), when there's no credential_ref; it signs in with this, never a client secret. Write-only, like api_token.",
 				Validators:  []validator.String{stringvalidator.LengthBetween(64, 20000)},
 			},
 			"admin_email": schema.StringAttribute{
@@ -265,7 +329,7 @@ func (r *connectionResource) Schema(_ context.Context, _ resource.SchemaRequest,
 			},
 			"api_token": schema.StringAttribute{
 				Optional: true, Sensitive: true, WriteOnly: true,
-				Description: "Jira, Confluence, or Okta: the account's API token; Slack: its bot token (xoxb-...); Notion: its internal integration's token; when there's no credential_ref. Write-only: pass it from an ephemeral, sensitive variable.",
+				Description: "Jira, Confluence, or Okta: the account's API token; Slack: its bot token (xoxb-...); Notion: its internal integration's token; Unity Catalog: its service principal's OAuth secret; DataHub: its access token; when there's no credential_ref. Write-only: pass it from an ephemeral, sensitive variable.",
 				Validators:  []validator.String{stringvalidator.LengthBetween(8, 4000)},
 			},
 			"service_account_key": schema.StringAttribute{
@@ -278,9 +342,8 @@ func (r *connectionResource) Schema(_ context.Context, _ resource.SchemaRequest,
 				Description: "Change this to send api_token, service_account_key, or certificate again: Aerugo replaces the connection's secret.",
 			},
 			"status": schema.StringAttribute{
-				Computed:      true,
-				Description:   "pending, ready, error, or disabled.",
-				PlanModifiers: []planmodifier.String{stringplanmodifier.UseStateForUnknown()},
+				Computed:    true,
+				Description: "pending, ready, error, or disabled: known after each apply, since pausing or a change of scope changes it.",
 			},
 		},
 	}
@@ -372,6 +435,21 @@ func (r *connectionResource) refresh(ctx context.Context, m *connectionModel, go
 		m.Sites = connList(ctx, s.Sites, diags)
 		m.TenantID = connString(s.TenantID)
 		m.ClientID = connString(s.ClientID)
+	case "catalog":
+		if s.APIBase != nil && *s.APIBase != dataplexGoogle { // Dataplex's and Glue's addresses are their own, unless given
+			m.Site = connString(s.APIBase)
+		}
+		m.Projects = connList(ctx, s.Projects, diags)
+		m.Domain = connString(s.Domain)
+		m.Location = connString(s.Location)
+		m.Catalogs = connList(ctx, s.Catalogs, diags)
+		m.Region = connString(s.Region)
+		m.RoleARN = connString(s.RoleARN)
+		m.Databases = connList(ctx, s.Databases, diags)
+		m.Collections = connList(ctx, s.Collections, diags)
+		m.Platforms = connList(ctx, s.Platforms, diags)
+		m.TenantID = connString(s.TenantID)
+		m.ClientID = connString(s.ClientID)
 	case "directory":
 		if s.Provider == nil || *s.Provider == "okta" { // Google Workspace's and Entra's addresses are their own, like Drive's
 			m.Site = connString(s.APIBase)
@@ -383,6 +461,12 @@ func (r *connectionResource) refresh(ctx context.Context, m *connectionModel, go
 	m.Directory = types.StringNull() // computed: known after every read, so a plan never shows it changing
 	if got.Kind == "directory" {
 		m.Directory = connString(s.Provider)
+	}
+	m.Catalog = types.StringNull()
+	if got.Kind == "catalog" {
+		m.Catalog = connString(s.Provider)
+	} else {
+		m.Location = types.StringNull()
 	}
 	m.APIToken = types.StringNull()
 	m.ServiceAccountKey = types.StringNull()
@@ -545,6 +629,46 @@ func (r *connectionResource) Create(ctx context.Context, req resource.CreateRequ
 		if !plan.HistoryDays.IsNull() && !plan.HistoryDays.IsUnknown() {
 			in["history_days"] = plan.HistoryDays.ValueInt64()
 		}
+	case "catalog":
+		route += "/catalog"
+		if !connSet(plan.Catalog) {
+			resp.Diagnostics.AddAttributeError(path.Root("catalog"), "Missing catalog", "A catalog connection names its catalog: dataplex, unity, glue, purview, or datahub.")
+			return
+		}
+		catalog := plan.Catalog.ValueString()
+		in["provider"] = catalog
+		if connSet(plan.Site) {
+			in["api_base"] = plan.Site.ValueString()
+		}
+		for field, v := range map[string]types.String{"domain": plan.Domain, "location": plan.Location, "region": plan.Region,
+			"role_arn": plan.RoleARN, "tenant_id": plan.TenantID, "client_id": plan.ClientID} {
+			if connSet(v) {
+				in[field] = v.ValueString()
+			}
+		}
+		for field, list := range map[string]types.List{"projects": plan.Projects, "catalogs": plan.Catalogs, "databases": plan.Databases,
+			"collections": plan.Collections, "platforms": plan.Platforms} {
+			if values := connStrings(ctx, list, &resp.Diagnostics); values != nil {
+				in[field] = values
+			}
+		}
+		secret, what := map[string]string{"unity": "client_secret", "datahub": "token", "purview": "certificate"}[catalog], ""
+		given := map[string]string{"client_secret": token, "token": token, "certificate": certificate}[secret]
+		switch {
+		case secret == "" && ref == "" && token == "" && certificate == "" && key == "": // read as the runner itself
+		case secret == "":
+			resp.Diagnostics.AddError("No credential, please", catalog+" is read as the runner's own identity: give no credential_ref, api_token, or certificate.")
+			return
+		case ref != "" && given == "":
+			in["credential_ref"] = ref
+		case ref == "" && given != "":
+			in[secret] = given
+		default:
+			what = map[string]string{"client_secret": "api_token (the service principal's OAuth secret)", "token": "api_token (the access token)",
+				"certificate": "certificate"}[secret]
+			oneCredential(what)
+			return
+		}
 	case "directory":
 		route += "/directory"
 		provider := "okta"
@@ -670,6 +794,8 @@ func (r *connectionResource) Update(ctx context.Context, req resource.UpdateRequ
 		"projects": {plan.Projects, state.Projects}, "repositories": {plan.Repositories, state.Repositories}, "drives": {plan.Drives, state.Drives},
 		"spaces": {plan.Spaces, state.Spaces}, "labels": {plan.Labels, state.Labels}, "page_trees": {plan.PageTrees, state.PageTrees},
 		"channels": {plan.Channels, state.Channels}, "sites": {plan.Sites, state.Sites},
+		"catalogs": {plan.Catalogs, state.Catalogs}, "databases": {plan.Databases, state.Databases},
+		"collections": {plan.Collections, state.Collections}, "platforms": {plan.Platforms, state.Platforms},
 	} {
 		if !lists[0].IsNull() && !lists[0].Equal(lists[1]) {
 			in[field] = connStrings(ctx, lists[0], &resp.Diagnostics)
@@ -696,6 +822,10 @@ func (r *connectionResource) Update(ctx context.Context, req resource.UpdateRequ
 		case token != "" && plan.Kind.ValueString() == "slack":
 			in["bot_token"] = token
 		case token != "" && plan.Kind.ValueString() == "notion":
+			in["token"] = token
+		case token != "" && plan.Kind.ValueString() == "catalog" && plan.Catalog.ValueString() == "unity":
+			in["client_secret"] = token
+		case token != "" && plan.Kind.ValueString() == "catalog":
 			in["token"] = token
 		case token != "":
 			in["api_token"] = token
