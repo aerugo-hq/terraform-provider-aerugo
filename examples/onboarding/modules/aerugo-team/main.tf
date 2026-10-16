@@ -19,7 +19,7 @@ variable "connections" {
   description = "The team's sources, from its sources.yaml."
   type = list(object({
     name              = string
-    kind              = string           # github, google, jira, confluence, slack, microsoft, notion, or directory
+    kind              = string           # github, google, jira, confluence, slack, microsoft, notion, catalog, or directory
     site              = optional(string) # Jira's or Confluence's site, or a directory's Okta org
     projects          = optional(list(string))
     spaces            = optional(list(string)) # Confluence: its spaces, by key
@@ -34,10 +34,18 @@ variable "connections" {
     history_days      = optional(number)       # Slack: how far back it reads
     drives            = optional(list(string))
     domain            = optional(string)
-    directory         = optional(string) # okta, google (Google Workspace), or entra
-    admin_email       = optional(string) # Google Workspace: the read-only admin it acts as
-    tenant_id         = optional(string) # Entra, Microsoft 365: the tenant's id
-    client_id         = optional(string) # Entra: the app registration's id
+    directory         = optional(string)       # okta, google (Google Workspace), or entra
+    admin_email       = optional(string)       # Google Workspace: the read-only admin it acts as
+    tenant_id         = optional(string)       # Entra, Microsoft 365: the tenant's id
+    client_id         = optional(string)       # Entra, Purview: the app registration's id; Unity Catalog: its service principal's
+    catalog           = optional(string)       # dataplex, unity, glue, purview, or datahub
+    location          = optional(string)       # Dataplex: where lineage is kept
+    catalogs          = optional(list(string)) # Unity Catalog: its catalogs
+    region            = optional(string)       # Glue: the AWS region
+    role_arn          = optional(string)       # Glue: the role the runner assumes
+    databases         = optional(list(string)) # Glue: its databases
+    collections       = optional(list(string)) # Purview: its collections
+    platforms         = optional(list(string)) # DataHub: its platforms
     credential_ref    = optional(string)
     every_minutes     = optional(number)
     enabled           = optional(bool, true)
@@ -45,8 +53,9 @@ variable "connections" {
   default = []
 
   validation {
-    condition     = alltrue([for c in var.connections : c.kind == "github" || c.credential_ref != null])
-    error_message = "Every source but GitHub names a credential_ref: a token never goes in this repository."
+    condition = alltrue([for c in var.connections : c.kind == "github" || c.credential_ref != null ||
+    (c.kind == "catalog" && contains(["dataplex", "glue"], coalesce(c.catalog, "-")))])
+    error_message = "Every source but GitHub, Dataplex, and Glue (read as the runner itself) names a credential_ref: a token never goes in this repository."
   }
   validation {
     condition     = length(distinct([for c in var.connections : c.name])) == length(var.connections)
@@ -78,6 +87,14 @@ resource "aerugo_connection" "this" {
   admin_email       = each.value.admin_email
   tenant_id         = each.value.tenant_id
   client_id         = each.value.client_id
+  catalog           = each.value.catalog
+  location          = each.value.location
+  catalogs          = each.value.catalogs
+  region            = each.value.region
+  role_arn          = each.value.role_arn
+  databases         = each.value.databases
+  collections       = each.value.collections
+  platforms         = each.value.platforms
   credential_ref    = each.value.credential_ref
   every_minutes     = each.value.every_minutes
   enabled           = each.value.enabled

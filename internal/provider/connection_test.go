@@ -328,6 +328,70 @@ resource "aerugo_connection" "m365" {
 }
 
 // A live Notion connection (S6) against the development stack's fake Notion: its integration token is write-only.
+func TestAccConnectionCatalog(t *testing.T) {
+	slug := "tfacc-" + acctest.RandStringFromCharSet(6, acctest.CharSetAlphaNum)
+	config := func(catalogs string) string {
+		return fmt.Sprintf(`
+resource "aerugo_team" "t" {
+  slug                = %q
+  name                = "Catalogs"
+  deletion_protection = false
+  wait_for_purge      = true
+}
+
+resource "aerugo_connection" "unity" {
+  team          = aerugo_team.t.slug
+  name          = "unity"
+  kind          = "catalog"
+  catalog       = "unity"
+  site          = "http://fake-llm:8080/databricks"
+  client_id     = "0b1e6a4e-6d0c-4c7e-9a43-5f2d8c1e7a10"
+  api_token     = "dbx-smoke-oauth-secret"
+  catalogs      = %s
+  every_minutes = 1440
+}
+
+resource "aerugo_connection" "dataplex" {
+  team     = aerugo_team.t.slug
+  name     = "dataplex"
+  kind     = "catalog"
+  catalog  = "dataplex"
+  site     = "http://fake-llm:8080/gcp-catalog"
+  projects = ["acme-data"]
+  domain   = "acme.test"
+}
+`, slug, catalogs)
+	}
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { testAccPreCheck(t) },
+		ProtoV6ProviderFactories: testAccProviders,
+		Steps: []resource.TestStep{
+			{
+				Config: config(`["main"]`),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("aerugo_connection.unity", "catalog", "unity"),
+					resource.TestCheckResourceAttr("aerugo_connection.unity", "catalogs.0", "main"),
+					resource.TestCheckNoResourceAttr("aerugo_connection.unity", "api_token"), // write-only
+					resource.TestCheckResourceAttr("aerugo_connection.dataplex", "projects.0", "acme-data"),
+					resource.TestCheckResourceAttr("aerugo_connection.dataplex", "location", "global"),
+					resource.TestCheckNoResourceAttr("aerugo_connection.dataplex", "credential_ref"), // read as the runner itself
+				),
+			},
+			{
+				Config: config(`["main", "finance"]`), // a scope list changes in place
+				Check:  resource.TestCheckResourceAttr("aerugo_connection.unity", "catalogs.1", "finance"),
+			},
+			{
+				ResourceName:            "aerugo_connection.unity",
+				ImportState:             true,
+				ImportStateId:           slug + "/unity",
+				ImportStateVerify:       true,
+				ImportStateVerifyIgnore: []string{"api_token", "credential_version", "status"},
+			},
+		},
+	})
+}
+
 func TestAccConnectionNotion(t *testing.T) {
 	slug := "tfacc-" + acctest.RandStringFromCharSet(6, acctest.CharSetAlphaNum)
 	resource.Test(t, resource.TestCase{
