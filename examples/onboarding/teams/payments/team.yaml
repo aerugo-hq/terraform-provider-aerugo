@@ -1,0 +1,10 @@
+# Payments: the team, and who is on it. A change here is a pull request the platform team approves (CODEOWNERS): it
+# decides who's onboarded. Each entry is a person (user:<username>) or a group from the identity provider
+# (group:<name>, or its id when the provider names groups by id, as Entra does by default). Joining or leaving the
+# group in the identity provider is the onboarding: no pull request per person, and Aerugo learns it at their next
+# sign-in.
+name: Payments
+discoverability: private # or org: anyone in the org may find and join it
+admins: [group:payments-leads]
+members: [group:payments-engineering]
+auditors: [user:carol]

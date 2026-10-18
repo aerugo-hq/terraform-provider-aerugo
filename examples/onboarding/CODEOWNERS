@@ -4,3 +4,7 @@
 *                    @acme/platform
 /teams/payments/     @acme/payments-leads
 /teams/finance/      @acme/finance-leads
+# Who's onboarded (each team.yaml) and who gets in (org.yaml) are the platform team's to approve. Last match wins,
+# so these come after the teams' own folders.
+/teams/*/team.yaml   @acme/platform
+/org.yaml            @acme/platform

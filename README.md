@@ -18,6 +18,7 @@ The design is ADR 0009 in the platform's repository.
 | `aerugo_connection_route` | One repository of a GitHub connection sent to another team (`to_team`, in place); destroying it sends it back. Imports as `team/connection/owner/repository`; the connection is `connection_name`. |
 | `aerugo_retention_policy` | How long a kind of record is kept, for the org or a team (and a classification, for documents); `keep_days` changes in place. Imports by id. |
 | `aerugo_legal_hold` | A legal hold on the org or a team; destroying it releases the hold. Imports by id. |
+| `aerugo_admission` | Who gets in: `org` (anyone signed in) or `teams` (a pilot: only members of onboarded teams, and org admins); `mode` changes in place, and removing it returns the org to `org`. Imports as `admission`. |
 | `data.aerugo_team` | A team that exists already, with the tool that manages it. |
 | `data.aerugo_status` | The API's version and whether each part answers. |
 
