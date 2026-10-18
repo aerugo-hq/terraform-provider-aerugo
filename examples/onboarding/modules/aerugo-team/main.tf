@@ -1,7 +1,8 @@
-# One team's sources, as its teams/<team>/sources.yaml declares them: each becomes an aerugo_connection. The platform
-# team owns this module; each team owns its own file (CODEOWNERS), so a team changes its sources by pull request, and
-# nobody else's. No secret ever lives here: every source but GitHub (which reads through the GitHub App) names a
-# credential_ref, a secret the team keeps in the secrets backend, rotated where it lives.
+# One team, as its folder declares it: teams/<team>/team.yaml, the team and who is on it (an aerugo_team, and an
+# aerugo_team_member for each role holder, a person or an identity provider's group), and teams/<team>/sources.yaml,
+# its sources (each an aerugo_connection). The platform team owns this module and every team.yaml (CODEOWNERS: it
+# decides who's onboarded); each team owns its sources.yaml. No secret ever lives here: every source but GitHub (which
+# reads through the GitHub App) names a credential_ref, a secret the team keeps in the secrets backend.
 terraform {
   required_providers {
     aerugo = {
@@ -11,8 +12,27 @@ terraform {
 }
 
 variable "team" {
-  description = "The team's slug. The team itself comes from your org's configuration (aerugo_team)."
+  description = "The team's slug (its folder's name)."
   type        = string
+}
+
+variable "settings" {
+  description = "The team and who is on it, from its team.yaml; null when the folder has none (the team exists already)."
+  type = object({
+    name            = string
+    discoverability = optional(string, "private") # private, or org: anyone in the org may find and join it
+    admins          = optional(list(string), [])  # each user:<username> or group:<name or id>
+    curators        = optional(list(string), [])
+    members         = optional(list(string), [])
+    auditors        = optional(list(string), [])
+  })
+  default = null
+
+  validation {
+    condition = var.settings == null || alltrue([for p in concat(var.settings.admins, var.settings.curators, var.settings.members, var.settings.auditors) :
+    can(regex("^(user|group):[A-Za-z0-9][A-Za-z0-9._@-]{0,127}$", p))])
+    error_message = "Each person is user:<username> and each group group:<name or id>, from the identity provider."
+  }
 }
 
 variable "connections" {
@@ -63,8 +83,39 @@ variable "connections" {
   }
 }
 
+# The team, when its folder says who's on it. Deletion protection stays on: removing team.yaml leaves the team in place
+# until an org admin turns it off, so nothing a team holds is purged by a file being deleted.
+resource "aerugo_team" "this" {
+  count = var.settings == null ? 0 : 1
+
+  slug            = var.team
+  name            = var.settings.name
+  discoverability = var.settings.discoverability
+}
+
+locals {
+  grants = var.settings == null ? {} : merge([
+    for role in ["admin", "curator", "member", "auditor"] : {
+      for principal in var.settings["${role}s"] : "${role}/${principal}" => { role = role, principal = principal }
+    }
+  ]...)
+}
+
+# Each role holder. A group's members are whoever the identity provider puts in it: joining or leaving the group is the
+# onboarding, and Aerugo learns it from the person's next sign-in token.
+resource "aerugo_team_member" "this" {
+  for_each = local.grants
+
+  team      = var.team
+  principal = each.value.principal
+  role      = each.value.role
+
+  depends_on = [aerugo_team.this]
+}
+
 resource "aerugo_connection" "this" {
-  for_each = { for c in var.connections : c.name => c }
+  for_each   = { for c in var.connections : c.name => c }
+  depends_on = [aerugo_team.this]
 
   team              = var.team
   name              = each.value.name

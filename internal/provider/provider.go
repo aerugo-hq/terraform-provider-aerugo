@@ -139,6 +139,7 @@ func (p *aerugoProvider) Resources(_ context.Context) []func() resource.Resource
 		NewRouteResource,
 		NewRetentionPolicyResource,
 		NewLegalHoldResource,
+		NewAdmissionResource,
 	}
 }
 

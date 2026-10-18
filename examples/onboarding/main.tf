@@ -1,6 +1,8 @@
-# Every team's sources, from one reviewed repository: teams/<team>/sources.yaml, one file per team, each owned by that
-# team (CODEOWNERS). CI plans on every pull request and applies on merge, signed in as a service account. Nothing
-# secret lives here: each source names a credential_ref, a secret the team keeps. Adding a team is adding its file.
+# Every team, from one reviewed repository: teams/<team>/team.yaml (the team and who is on it, the platform team's to
+# approve) and teams/<team>/sources.yaml (its sources, the team's own), and org.yaml (who gets in). CI plans on every
+# pull request and applies on merge, signed in as a service account. Onboarding a team is a pull request adding its
+# folder; a pilot (org.yaml's admission: teams) lets in only the teams here, a wave at a time. Nothing secret lives
+# here: each source names a credential_ref, a secret the team keeps.
 terraform {
   required_version = ">= 1.11"
 
@@ -23,18 +25,23 @@ provider "aerugo" {
 }
 
 locals {
-  teams = {
-    for file in fileset(path.module, "teams/*/sources.yaml") :
-    basename(dirname(file)) => yamldecode(file("${path.module}/${file}"))
-  }
+  folders = toset([for file in fileset(path.module, "teams/*/{team,sources}.yaml") : basename(dirname(file))])
+  org     = fileexists("${path.module}/org.yaml") ? yamldecode(file("${path.module}/org.yaml")) : {}
+}
+
+# Who gets in: "teams" while a pilot runs (only members of the teams below, and org admins), "org" once everyone is in.
+resource "aerugo_admission" "org" {
+  count = try(local.org.admission, null) == null ? 0 : 1
+  mode  = local.org.admission
 }
 
 module "team" {
   source   = "./modules/aerugo-team"
-  for_each = local.teams
+  for_each = local.folders
 
   team        = each.key
-  connections = try(each.value.connections, [])
+  settings    = try(yamldecode(file("${path.module}/teams/${each.key}/team.yaml")), null) # none: the team exists already
+  connections = try(yamldecode(file("${path.module}/teams/${each.key}/sources.yaml")).connections, [])
 }
 
 output "sources" {

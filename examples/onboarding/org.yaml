@@ -1,0 +1,7 @@
+# Who gets in, the platform team's to approve (CODEOWNERS).
+#   teams: a pilot. Only members of the teams under teams/, and org admins, get in, so nothing a source shares
+#          company-wide reaches anyone else. Onboard a team at a time by adding its folder.
+#   org:   everyone the identity provider signs in. Switch to it once every team is in.
+# Pair a pilot with the identity provider's own control: in Entra, set Aerugo's enterprise app to "assignment required"
+# and assign only the pilot's groups, so nobody else can even sign in.
+admission: teams
