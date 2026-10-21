@@ -32,7 +32,7 @@ var (
 )
 
 // The kinds of source a connection can be (ADR 0011), each created through its own API route.
-var connectionKinds = []string{"github", "google", "jira", "confluence", "slack", "microsoft", "notion", "catalog", "directory"}
+var connectionKinds = []string{"github", "google", "jira", "confluence", "slack", "microsoft", "teams", "notion", "catalog", "directory"}
 
 // The data catalogs a catalog connection reads (S7); Dataplex and Glue are read as the runner's own identity, no secret.
 var catalogKinds = []string{"dataplex", "unity", "glue", "purview", "datahub"}
@@ -91,6 +91,8 @@ type connectionModel struct {
 	CompanyWorkspace  types.Bool   `tfsdk:"company_workspace"`
 	HistoryDays       types.Int64  `tfsdk:"history_days"`
 	Sites             types.List   `tfsdk:"sites"`
+	TeamIDs           types.List   `tfsdk:"team_ids"`
+	BotService        types.String `tfsdk:"bot_service"`
 	Catalog           types.String `tfsdk:"catalog"`
 	Location          types.String `tfsdk:"location"`
 	Catalogs          types.List   `tfsdk:"catalogs"`
@@ -133,6 +135,8 @@ type connectionAPI struct {
 		CompanyWS     *bool    `json:"company_workspace"`
 		HistoryDays   *int64   `json:"history_days"`
 		Sites         []string `json:"sites"`
+		TeamIDs       []string `json:"team_ids"`
+		BotService    *string  `json:"bot_service"`
 		Location      *string  `json:"location"`
 		Catalogs      []string `json:"catalogs"`
 		Region        *string  `json:"region"`
@@ -210,7 +214,7 @@ func (r *connectionResource) Schema(_ context.Context, _ resource.SchemaRequest,
 			},
 			"kind": schema.StringAttribute{
 				Required:      true,
-				Description:   "What it connects: github, google (Drive), jira, confluence, slack, microsoft (Microsoft 365), notion (readable by the team's members only: Notion doesn't say who can read a page), catalog (a data catalog's metadata), or directory (who's at the company, and who has left).",
+				Description:   "What it connects: github, google (Drive), jira, confluence, slack, microsoft (Microsoft 365), teams (Microsoft Teams' standard channels, in teams whose owners added the company's Teams app), notion (readable by the team's members only: Notion doesn't say who can read a page), catalog (a data catalog's metadata), or directory (who's at the company, and who has left).",
 				PlanModifiers: replace,
 				Validators:    []validator.String{stringvalidator.OneOf(connectionKinds...)},
 			},
@@ -276,8 +280,15 @@ func (r *connectionResource) Schema(_ context.Context, _ resource.SchemaRequest,
 				Validators:    []validator.Int64{int64validator.AtLeast(1)},
 			},
 			"repositories": scope("GitHub: the repositories it brings in; unset, every one the installation grants."),
-			"channels":     scope("Slack: the channels it brings in, by id; unset, every channel its bot is in."),
+			"channels":     scope("Slack: the channels it brings in, by id; unset, every channel its bot is in. Teams: its standard channels, by id (19:...@thread.tacv2); unset, every standard channel of its teams."),
 			"sites":        scope("Microsoft 365: the SharePoint sites an admin granted its app (Sites.Selected), by Graph's site id; required for microsoft."),
+			"team_ids":     scope("Teams: the teams it may read, by id; each is read only once its owner adds the company's Teams app. Required for teams."),
+			"bot_service": schema.StringAttribute{
+				Optional: true, Computed: true,
+				Description:   "Teams: the Bot Framework service address its bot posts capture's notice through; unset, Teams' global one.",
+				PlanModifiers: []planmodifier.String{keepWhenUnset{}, stringplanmodifier.RequiresReplace()},
+				Validators:    []validator.String{stringvalidator.LengthBetween(8, 300)},
+			},
 			"company_workspace": schema.BoolAttribute{
 				Optional: true, Computed: true, Default: booldefault.StaticBool(false),
 				Description:   "Slack: this workspace is the company's own, so a public channel reaches the whole org (a channel shared with another organization never does).",
@@ -285,7 +296,7 @@ func (r *connectionResource) Schema(_ context.Context, _ resource.SchemaRequest,
 			},
 			"history_days": schema.Int64Attribute{
 				Optional:    true,
-				Description: "Slack: how many days back it reads (1 to 3650); unset, a year. Older messages leave the index. Changes in place.",
+				Description: "Slack or Teams: how many days back it reads (1 to 3650); unset, a year. Older messages leave the index. Changes in place.",
 				Validators:  []validator.Int64{int64validator.Between(1, 3650)},
 			},
 			"drives": scope("Google Drive: the shared drives it brings in; folders shared with its account always come."),
@@ -302,19 +313,19 @@ func (r *connectionResource) Schema(_ context.Context, _ resource.SchemaRequest,
 			},
 			"tenant_id": schema.StringAttribute{
 				Optional:      true,
-				Description:   "An Entra directory, Microsoft 365, or Purview: the tenant's id.",
+				Description:   "An Entra directory, Microsoft 365, Teams, or Purview: the tenant's id.",
 				PlanModifiers: replace,
 				Validators:    []validator.String{stringvalidator.RegexMatches(guidPattern, "must be a tenant id (a GUID)")},
 			},
 			"client_id": schema.StringAttribute{
 				Optional:      true,
-				Description:   "An Entra directory, Microsoft 365, or Purview: its app registration's application (client) id. Unity Catalog: its service principal's application id.",
+				Description:   "An Entra directory, Microsoft 365, or Purview: its app registration's application (client) id; Teams: the company's Teams app's, which is also its bot's. Unity Catalog: its service principal's application id.",
 				PlanModifiers: replace,
 				Validators:    []validator.String{stringvalidator.RegexMatches(guidPattern, "must be an application id (a GUID)")},
 			},
 			"certificate": schema.StringAttribute{
 				Optional: true, Sensitive: true, WriteOnly: true,
-				Description: "An Entra directory, Microsoft 365, or Purview: its app's private key and certificate (PEM), when there's no credential_ref; it signs in with this, never a client secret. Write-only, like api_token.",
+				Description: "An Entra directory, Microsoft 365, Teams, or Purview: its app's private key and certificate (PEM), when there's no credential_ref; it signs in with this, never a client secret. Write-only, like api_token.",
 				Validators:  []validator.String{stringvalidator.LengthBetween(64, 20000)},
 			},
 			"admin_email": schema.StringAttribute{
@@ -435,6 +446,12 @@ func (r *connectionResource) refresh(ctx context.Context, m *connectionModel, go
 		m.Sites = connList(ctx, s.Sites, diags)
 		m.TenantID = connString(s.TenantID)
 		m.ClientID = connString(s.ClientID)
+	case "teams":
+		m.TeamIDs = connList(ctx, s.TeamIDs, diags)
+		m.Channels = connList(ctx, s.Channels, diags)
+		m.HistoryDays = connInt64(s.HistoryDays)
+		m.TenantID = connString(s.TenantID)
+		m.ClientID = connString(s.ClientID)
 	case "catalog":
 		if s.APIBase != nil && *s.APIBase != dataplexGoogle { // Dataplex's and Glue's addresses are their own, unless given
 			m.Site = connString(s.APIBase)
@@ -461,6 +478,10 @@ func (r *connectionResource) refresh(ctx context.Context, m *connectionModel, go
 	m.Directory = types.StringNull() // computed: known after every read, so a plan never shows it changing
 	if got.Kind == "directory" {
 		m.Directory = connString(s.Provider)
+	}
+	m.BotService = types.StringNull() // computed: known after every read, so a plan never shows it changing
+	if got.Kind == "teams" {
+		m.BotService = connString(s.BotService)
 	}
 	m.Catalog = types.StringNull()
 	if got.Kind == "catalog" {
@@ -598,6 +619,36 @@ func (r *connectionResource) Create(ctx context.Context, req resource.CreateRequ
 		in["tenant_id"], in["client_id"], in["sites"] = plan.TenantID.ValueString(), plan.ClientID.ValueString(), sites
 		if connSet(plan.Site) {
 			in["api_base"] = plan.Site.ValueString()
+		}
+		switch {
+		case ref != "" && certificate == "":
+			in["credential_ref"] = ref
+		case ref == "" && certificate != "":
+			in["certificate"] = certificate
+		default:
+			oneCredential("certificate")
+			return
+		}
+	case "teams":
+		route += "/teams"
+		teamIDs := connStrings(ctx, plan.TeamIDs, &resp.Diagnostics)
+		if !connSet(plan.TenantID) || !connSet(plan.ClientID) || len(teamIDs) == 0 {
+			resp.Diagnostics.AddError("Missing tenant_id, client_id, or team_ids",
+				"A Teams connection names its tenant and the company's Teams app by id, and the teams it may read.")
+			return
+		}
+		in["tenant_id"], in["client_id"], in["team_ids"] = plan.TenantID.ValueString(), plan.ClientID.ValueString(), teamIDs
+		if connSet(plan.Site) {
+			in["api_base"] = plan.Site.ValueString()
+		}
+		if connSet(plan.BotService) {
+			in["bot_service"] = plan.BotService.ValueString()
+		}
+		if channels := connStrings(ctx, plan.Channels, &resp.Diagnostics); channels != nil {
+			in["channels"] = channels
+		}
+		if !plan.HistoryDays.IsNull() && !plan.HistoryDays.IsUnknown() {
+			in["history_days"] = plan.HistoryDays.ValueInt64()
 		}
 		switch {
 		case ref != "" && certificate == "":
@@ -793,7 +844,7 @@ func (r *connectionResource) Update(ctx context.Context, req resource.UpdateRequ
 	for field, lists := range map[string][2]types.List{
 		"projects": {plan.Projects, state.Projects}, "repositories": {plan.Repositories, state.Repositories}, "drives": {plan.Drives, state.Drives},
 		"spaces": {plan.Spaces, state.Spaces}, "labels": {plan.Labels, state.Labels}, "page_trees": {plan.PageTrees, state.PageTrees},
-		"channels": {plan.Channels, state.Channels}, "sites": {plan.Sites, state.Sites},
+		"channels": {plan.Channels, state.Channels}, "sites": {plan.Sites, state.Sites}, "team_ids": {plan.TeamIDs, state.TeamIDs},
 		"catalogs": {plan.Catalogs, state.Catalogs}, "databases": {plan.Databases, state.Databases},
 		"collections": {plan.Collections, state.Collections}, "platforms": {plan.Platforms, state.Platforms},
 	} {

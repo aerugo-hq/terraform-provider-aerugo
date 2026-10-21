@@ -327,6 +327,71 @@ resource "aerugo_connection" "m365" {
 	})
 }
 
+// A Teams connection (C1a): its tenant, app, teams, and channels are read back, its certificate is write-only, and a
+// team added changes it in place.
+func TestAccConnectionTeams(t *testing.T) {
+	slug := "tfacc-" + acctest.RandStringFromCharSet(6, acctest.CharSetAlphaNum)
+	tenant, app := "8b3e9a64-7c1f-4f3e-9d2a-1a2b3c4d5e6f", "3a7e2d9f-6b5c-4d4e-9f0a-1b2c3d4e5f60"
+	one, two := "11111111-2222-3333-4444-555555555555", "11111111-2222-3333-4444-555555555556"
+	certificate := testCertificate(t)
+	config := func(teams string) string {
+		return fmt.Sprintf(`
+resource "aerugo_team" "t" {
+  slug                = %q
+  name                = "Teams"
+  deletion_protection = false
+  wait_for_purge      = true
+}
+
+resource "aerugo_connection" "teams" {
+  team          = aerugo_team.t.slug
+  name          = "teams"
+  kind          = "teams"
+  site          = "http://fake-llm:8080/microsoft"
+  bot_service   = "http://fake-llm:8080/teams-bot"
+  tenant_id     = %q
+  client_id     = %q
+  team_ids      = %s
+  channels      = ["19:handover@thread.tacv2"]
+  history_days  = 90
+  certificate   = <<-EOT
+%s
+  EOT
+  every_minutes = 60
+}
+`, slug, tenant, app, teams, certificate)
+	}
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { testAccPreCheck(t) },
+		ProtoV6ProviderFactories: testAccProviders,
+		Steps: []resource.TestStep{
+			{
+				Config: config(fmt.Sprintf("[%q]", one)),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("aerugo_connection.teams", "kind", "teams"),
+					resource.TestCheckResourceAttr("aerugo_connection.teams", "tenant_id", tenant),
+					resource.TestCheckResourceAttr("aerugo_connection.teams", "team_ids.#", "1"),
+					resource.TestCheckResourceAttr("aerugo_connection.teams", "channels.0", "19:handover@thread.tacv2"),
+					resource.TestCheckResourceAttr("aerugo_connection.teams", "history_days", "90"),
+					resource.TestCheckResourceAttr("aerugo_connection.teams", "bot_service", "http://fake-llm:8080/teams-bot"),
+					resource.TestCheckNoResourceAttr("aerugo_connection.teams", "certificate"), // write-only
+				),
+			},
+			{
+				ResourceName:            "aerugo_connection.teams",
+				ImportState:             true,
+				ImportStateId:           slug + "/teams",
+				ImportStateVerify:       true,
+				ImportStateVerifyIgnore: []string{"certificate", "site", "credential_version", "status"},
+			},
+			{ // another team: in place
+				Config: config(fmt.Sprintf("[%q, %q]", one, two)),
+				Check:  resource.TestCheckResourceAttr("aerugo_connection.teams", "team_ids.#", "2"),
+			},
+		},
+	})
+}
+
 // A live Notion connection (S6) against the development stack's fake Notion: its integration token is write-only.
 func TestAccConnectionCatalog(t *testing.T) {
 	slug := "tfacc-" + acctest.RandStringFromCharSet(6, acctest.CharSetAlphaNum)
